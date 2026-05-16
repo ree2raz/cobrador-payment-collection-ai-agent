@@ -1,0 +1,7 @@
+[project]
+name = "cobrador-payment-collection-ai-agent"
+version = "0.1.0"
+description = "Cobrador the AI Agent that collects payment"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
