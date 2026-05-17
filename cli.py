@@ -3,6 +3,7 @@
 import os
 import sys
 
+from observability import setup_phoenix
 from agent import Agent
 
 
@@ -10,6 +11,8 @@ def main() -> None:
     if not os.getenv("OPENAI_API_KEY"):
         print("Error: OPENAI_API_KEY environment variable not set.")
         sys.exit(1)
+
+    setup_phoenix()
 
     print("=" * 60)
     print("  Cobrador — Payment Collection Agent")

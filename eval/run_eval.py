@@ -24,6 +24,8 @@ from eval.judge import judge_conversation
 from eval.personas import PERSONAS
 from eval.simulator import simulate
 
+from observability import setup_phoenix
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,8 @@ def main() -> None:
     if not os.getenv("OPENAI_API_KEY"):
         print("Error: OPENAI_API_KEY not set.")
         sys.exit(1)
+
+    setup_phoenix()
 
     if args.tier in ("1", "2", "all"):
         passed = run_tier1_and_2()
