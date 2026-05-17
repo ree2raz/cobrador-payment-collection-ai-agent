@@ -138,3 +138,14 @@ def test_compound_first_turn_full_extraction():
 def test_empty_input():
     hints = extract_identity_hints("")
     assert hints.any_captured() is False
+
+
+# ── Additional DOB-keyword variants ──────────────────────────────────────────
+
+@pytest.mark.parametrize("text,expected", [
+    ("my birth date is 14th May 1990", date(1990, 5, 14)),
+    ("birthday: 14/05/1990", date(1990, 5, 14)),
+    ("my birthday 14 May 1990", date(1990, 5, 14)),
+])
+def test_birth_date_birthday_variants(text, expected):
+    assert extract_identity_hints(text).dob == expected

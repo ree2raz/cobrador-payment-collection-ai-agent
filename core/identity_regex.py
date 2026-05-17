@@ -54,9 +54,10 @@ _NAME_RE = re.compile(
 
 # DOB keyword followed by anything date-like (we let dateutil parse it).
 _DOB_RE = re.compile(
-    r"\b(?:DOB|date\s+of\s+birth|d\.?o\.?b\.?|born(?:\s+on)?)\s*[:\-]?\s*"
+    r"\b(?:DOB|date\s+of\s+birth|birth\s*date|birthday|d\.?o\.?b\.?|born(?:\s+on)?)\s*"
+    r"(?:is\s+)?[:\-]?\s*"
     r"([0-9A-Za-z\s,/\-\.]{6,40}?)"
-    r"(?=,|\.|$|\bI\s|\bmy\s|\bAadhaar\b|\bpincode\b|\bcard\b|\bpay\b)",
+    r"(?=,|\.|$|\bI\s|\bmy\s|\bAadhaar\b|\bpincode\b|\bcard\b|\bpay\b|\bwant\b)",
     re.IGNORECASE,
 )
 

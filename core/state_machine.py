@@ -39,7 +39,12 @@ class InvalidTransitionError(RuntimeError):
 
 ALLOWED_TRANSITIONS: dict[State, set[State]] = {
     State.INIT: {State.AWAITING_ACCOUNT_ID},
-    State.AWAITING_ACCOUNT_ID: {State.LOOKING_UP_ACCOUNT, State.AWAITING_ACCOUNT_ID, State.USER_ABORTED},
+    State.AWAITING_ACCOUNT_ID: {
+        State.LOOKING_UP_ACCOUNT,
+        State.AWAITING_ACCOUNT_ID,
+        State.TERMINAL_ACCOUNT_NOT_FOUND,
+        State.USER_ABORTED,
+    },
     State.LOOKING_UP_ACCOUNT: {
         State.AWAITING_IDENTITY,
         State.AWAITING_ACCOUNT_ID,

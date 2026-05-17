@@ -8,14 +8,25 @@ ACCOUNT_ID_EXTRACTION = (
     "Extract the account ID from the user's message.\n\n"
     "RULES:\n"
     "1. Only extract what the user EXPLICITLY stated. Do not guess.\n"
-    "2. Account IDs follow the pattern ACC + digits (e.g. ACC1001). Normalize: strip spaces/hyphens, uppercase.\n"
-    '3. If the user clearly provided an account ID, set account_id and user_intent = "provided_id".\n'
-    '4. If the user is asking a question without providing an ID, set user_intent = "asking_question".\n'
-    '5. If the user says "stop", "cancel", "quit", "end", set user_intent = "wants_to_cancel".\n\n'
+    "2. Account IDs follow the pattern ACC + digits (e.g. ACC1001). Normalize: "
+    "strip spaces/hyphens, uppercase. Convert verbal digits to numerals "
+    "('one zero zero one' → '1001', 'triple zero one' → '0001').\n"
+    "3. The message may also contain unrelated information (name, DOB, payment "
+    "intent, greeting) — extract the account ID anyway. Do not require the "
+    "message's primary topic to be the account ID.\n"
+    '4. If the user clearly provided an account ID, set account_id and user_intent = "provided_id".\n'
+    '5. If the user is asking a question without providing an ID, set user_intent = "asking_question".\n'
+    '6. If the user says "stop", "cancel", "quit", "end", set user_intent = "wants_to_cancel".\n\n'
     "EXAMPLES:\n"
     '"yeah my account number is ACC1001 I think" → {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
     '"it\'s ACC 1001" → {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
     '"account id: acc1001" → {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
+    "// Verbal digits — common in voice transcripts:\n"
+    '"my account id is acc one zero zero one" → {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
+    '"account A C C one zero zero two" → {{"account_id": "ACC1002", "user_intent": "provided_id"}}\n'
+    "// Compound message — account ID buried among other info:\n"
+    '"Hi I am Nithin Jain, my account id is acc one zero zero one, DOB May 14 1990, pay 400" '
+    '→ {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
     '"I\'m not sure what my account ID is" → {{"account_id": null, "user_intent": "asking_question"}}\n'
     '"cancel" → {{"account_id": null, "user_intent": "wants_to_cancel"}}\n\n'
     "User's message: {user_input}"
