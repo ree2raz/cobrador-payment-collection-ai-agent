@@ -317,6 +317,42 @@ def test_compound_first_turn_regex_fallback(mock_ec, mock_ea, mock_ei, mock_eid,
     assert "confirm" in r.lower() or "14" in r
 
 
+# ── Scenario 7-sim: Greeting first, compound on turn 2 (matches simulator) ──
+# The eval simulator always sends "hello" as a seed turn, so the compound
+# "ACC + name + DOB" message arrives in AWAITING_ACCOUNT_ID, not INIT.
+# Opportunistic extraction must fire here too.
+
+@patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+@patch("agent.extract_identity", return_value=empty_identity())
+@patch("agent.extract_amount", return_value=mock_amount(None))
+@patch("agent.extract_card", return_value=mock_card())
+def test_compound_message_after_greeting_seed(mock_ec, mock_ea, mock_ei, mock_eid, mock_la):
+    """Reproduces the exact flow the persona simulator drives:
+       1. Simulator sends 'hello' (seed) → agent returns greeting, stays in
+          AWAITING_ACCOUNT_ID.
+       2. Persona sends compound message → agent must extract account ID,
+          look up, AND opportunistically capture identity from the SAME
+          message before asking for identity again."""
+    agent = Agent()
+    # Turn 1: simulator seed
+    r1 = msg(agent.next("hello"))
+    assert agent._conv.state == State.AWAITING_ACCOUNT_ID
+    assert "account" in r1.lower()
+
+    # Turn 2: persona's compound message (LLM returns empty — regex must win)
+    r2 = msg(agent.next(
+        "Hi, my account is ACC1001, name Nithin Jain, DOB 14th May 1990, "
+        "I want to pay 400 rupees"
+    ))
+    # Lookup ran, identity opportunistically captured, DOB confirm prompt shown
+    assert agent._conv.account_id == "ACC1001"
+    assert agent._conv.provided_name == "Nithin Jain"
+    assert agent._conv.awaiting_dob_confirmation is True
+    assert agent._conv.pending_dob == date(1990, 5, 14)
+    assert "confirm" in r2.lower() or "14" in r2
+
+
 # ── Scenario 7a: User volunteers amount + card before verification ───────────
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))

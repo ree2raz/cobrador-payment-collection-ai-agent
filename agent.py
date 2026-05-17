@@ -8,7 +8,14 @@ responses are used for 90% of agent output (deterministic, testable, PII-safe).
 from __future__ import annotations
 
 import logging
+import re
 from decimal import Decimal
+
+_IDENTITY_KEYWORDS = re.compile(
+    r"\b(name|i\s*am|i'?m|this\s+is|dob|date\s+of\s+birth|d\.?o\.?b\.?|born|"
+    r"aadhaar|adhaar|pincode|pin\s*code|naam|janam)\b",
+    re.IGNORECASE,
+)
 
 from core.identity_regex import IdentityHints, extract_identity_hints
 from core.state_machine import (
@@ -99,14 +106,7 @@ class Agent:
                 return R.GREETING
             self._conv.account_id = extraction.account_id
             response = self._do_lookup()
-            # If lookup succeeded, opportunistically harvest identity fields
-            # from the same opening message before falling back to ASK_IDENTITY.
-            if self._conv.state == State.AWAITING_IDENTITY:
-                self._opportunistic_payment_details(user_input)
-                opportunistic = self._opportunistic_identity(user_input)
-                if opportunistic is not None:
-                    return opportunistic
-            return response
+            return self._maybe_opportunistic(user_input, response)
 
         if state == State.AWAITING_ACCOUNT_ID:
             return self._handle_account_id(user_input)
@@ -142,7 +142,22 @@ class Agent:
 
         # Have an account ID — attempt lookup
         self._conv.account_id = extraction.account_id
-        return self._do_lookup()
+        response = self._do_lookup()
+        return self._maybe_opportunistic(user_input, response)
+
+    def _maybe_opportunistic(self, user_input: str, default_response: str) -> str:
+        """After a successful account lookup, rescan the user's message for
+        volunteered identity / amount / card details so we don't re-ask for
+        info they already provided. Used by both the INIT branch (turn-1
+        compound message) and _handle_account_id (post-greeting compound
+        message — the simulator framework always sends 'hello' as a seed,
+        so the compound arrives in AWAITING_ACCOUNT_ID, not INIT).
+        """
+        if self._conv.state != State.AWAITING_IDENTITY:
+            return default_response
+        self._opportunistic_payment_details(user_input)
+        opportunistic = self._opportunistic_identity(user_input)
+        return opportunistic if opportunistic is not None else default_response
 
     def _do_lookup(self) -> str:
         assert self._conv.account_id is not None
@@ -282,44 +297,49 @@ class Agent:
 
     def _opportunistic_identity(self, user_input: str) -> str | None:
         """Harvest identity fields from a message whose primary intent was
-        something else (account ID on turn 1). Returns the next-step user-facing
-        message if any field was captured, else None to fall back to the
-        caller's default response.
+        something else (account ID on turn 1, or the same after a 'hello'
+        seed turn). Returns the next-step user-facing message if any field
+        was captured, else None to fall back to the caller's default response.
 
-        Two layers, merged: a deterministic regex pre-extractor for labeled
-        patterns ("name X", "DOB Y", "aadhaar last 4 Z") and an LLM call for
-        messy/Hinglish/freeform cases. The regex layer is the belt-and-
-        suspenders for reasoning-model flakiness on dense compound first-turn
-        messages — gpt-5.4 sometimes picks a single primary intent and skips
-        identity fields. The regex never misses an explicit pattern.
+        Two layers: a deterministic regex pre-extractor for labeled patterns
+        ("name X", "DOB Y", "aadhaar last 4 Z") and an LLM fallback for
+        messy/Hinglish forms. The regex is the belt-and-suspenders for
+        reasoning-model flakiness: gpt-5.4 sometimes picks a single "primary
+        intent" for a dense compound message and skips identity fields. The
+        regex never misses an explicit pattern. We only escalate to the LLM
+        when the message clearly mentions identity-related keywords that the
+        regex might have failed to parse — this keeps the opportunistic path
+        free of spurious LLM calls on messages like "ACC1001".
         """
-        already = {
-            "full_name": self._conv.provided_name,
-            "dob": self._conv.provided_dob,
-            "aadhaar_last4": self._conv.provided_aadhaar4,
-            "pincode": self._conv.provided_pincode,
-        }
-
         hints = extract_identity_hints(user_input)
-        try:
-            extraction = extract_identity(user_input, already)
-        except Exception as exc:
-            # If the LLM fails entirely, fall back to regex-only hints. Better
-            # to capture half the fields than to drop everything the user said.
-            logger.warning("opportunistic extract_identity failed: %s", exc)
-            extraction = None
 
-        # Merge regex hints with LLM extraction. LLM result wins where it
-        # captured something (it handles Hinglish, verbal numbers, etc.);
-        # regex fills any gaps the LLM missed on the same message.
-        name = (extraction.full_name if extraction else None) or hints.full_name
-        dob = (extraction.dob if extraction else None) or hints.dob
-        dob_ambiguous = (
-            (extraction.dob_ambiguous if extraction else False)
-            or (hints.dob_ambiguous and dob is None)
-        )
-        aadhaar4 = (extraction.aadhaar_last4 if extraction else None) or hints.aadhaar_last4
-        pincode = (extraction.pincode if extraction else None) or hints.pincode
+        # Only call the LLM if regex missed everything AND the message has
+        # identity-related keywords. Avoids wasting an LLM call (and confusing
+        # mock side_effect lists in tests) on a bare account-ID message.
+        name = hints.full_name
+        dob = hints.dob
+        dob_ambiguous = hints.dob_ambiguous
+        aadhaar4 = hints.aadhaar_last4
+        pincode = hints.pincode
+
+        if not hints.any_captured() and _IDENTITY_KEYWORDS.search(user_input):
+            already = {
+                "full_name": self._conv.provided_name,
+                "dob": self._conv.provided_dob,
+                "aadhaar_last4": self._conv.provided_aadhaar4,
+                "pincode": self._conv.provided_pincode,
+            }
+            try:
+                extraction = extract_identity(user_input, already)
+            except Exception as exc:
+                logger.warning("opportunistic extract_identity failed: %s", exc)
+                extraction = None
+            if extraction is not None:
+                name = extraction.full_name or name
+                dob = extraction.dob or dob
+                dob_ambiguous = dob_ambiguous or (extraction.dob_ambiguous and dob is None)
+                aadhaar4 = extraction.aadhaar_last4 or aadhaar4
+                pincode = extraction.pincode or pincode
 
         captured = any((name, dob, aadhaar4, pincode)) or dob_ambiguous
         if not captured:
