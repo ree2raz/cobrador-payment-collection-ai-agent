@@ -71,6 +71,7 @@ User Input
 | Sync interface, no streaming | Simplifies state management; streaming can be added at the transport layer without changing FSM |
 | Memory-only state, no Redis | Acceptable for single-process demo; not acceptable in production |
 | GPT-4o for extraction | Fine-tuned small model would cut cost ~80%; deferred pending labeled dataset |
+| Card details collected in plain text | Text interface has no secure input channel; production would use tokenization (e.g. Stripe.js) so raw card data never reaches the agent |
 
 ---
 
