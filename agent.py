@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
+from core.identity_regex import IdentityHints, extract_identity_hints
 from core.state_machine import (
     CardDetails,
     ConversationState,
@@ -283,38 +284,60 @@ class Agent:
         """Harvest identity fields from a message whose primary intent was
         something else (account ID on turn 1). Returns the next-step user-facing
         message if any field was captured, else None to fall back to the
-        caller's default response."""
+        caller's default response.
+
+        Two layers, merged: a deterministic regex pre-extractor for labeled
+        patterns ("name X", "DOB Y", "aadhaar last 4 Z") and an LLM call for
+        messy/Hinglish/freeform cases. The regex layer is the belt-and-
+        suspenders for reasoning-model flakiness on dense compound first-turn
+        messages — gpt-5.4 sometimes picks a single primary intent and skips
+        identity fields. The regex never misses an explicit pattern.
+        """
         already = {
             "full_name": self._conv.provided_name,
             "dob": self._conv.provided_dob,
             "aadhaar_last4": self._conv.provided_aadhaar4,
             "pincode": self._conv.provided_pincode,
         }
-        extraction = extract_identity(user_input, already)
 
-        captured = (
-            extraction.full_name is not None
-            or extraction.aadhaar_last4 is not None
-            or extraction.pincode is not None
-            or extraction.dob is not None
-            or extraction.dob_ambiguous
+        hints = extract_identity_hints(user_input)
+        try:
+            extraction = extract_identity(user_input, already)
+        except Exception as exc:
+            # If the LLM fails entirely, fall back to regex-only hints. Better
+            # to capture half the fields than to drop everything the user said.
+            logger.warning("opportunistic extract_identity failed: %s", exc)
+            extraction = None
+
+        # Merge regex hints with LLM extraction. LLM result wins where it
+        # captured something (it handles Hinglish, verbal numbers, etc.);
+        # regex fills any gaps the LLM missed on the same message.
+        name = (extraction.full_name if extraction else None) or hints.full_name
+        dob = (extraction.dob if extraction else None) or hints.dob
+        dob_ambiguous = (
+            (extraction.dob_ambiguous if extraction else False)
+            or (hints.dob_ambiguous and dob is None)
         )
+        aadhaar4 = (extraction.aadhaar_last4 if extraction else None) or hints.aadhaar_last4
+        pincode = (extraction.pincode if extraction else None) or hints.pincode
+
+        captured = any((name, dob, aadhaar4, pincode)) or dob_ambiguous
         if not captured:
             return None
 
-        if extraction.full_name is not None:
-            self._conv.provided_name = extraction.full_name
-        if extraction.aadhaar_last4 is not None:
-            self._conv.provided_aadhaar4 = extraction.aadhaar_last4
-        if extraction.pincode is not None:
-            self._conv.provided_pincode = extraction.pincode
+        if name is not None:
+            self._conv.provided_name = name
+        if aadhaar4 is not None:
+            self._conv.provided_aadhaar4 = aadhaar4
+        if pincode is not None:
+            self._conv.provided_pincode = pincode
 
-        if extraction.dob is not None and not extraction.dob_ambiguous:
-            self._conv.pending_dob = extraction.dob
+        if dob is not None and not dob_ambiguous:
+            self._conv.pending_dob = dob
             self._conv.awaiting_dob_confirmation = True
-            return R.dob_confirm_prompt(extraction.dob)
+            return R.dob_confirm_prompt(dob)
 
-        if extraction.dob_ambiguous:
+        if dob_ambiguous:
             return R.dob_ambiguous_prompt()
 
         if self._conv.has_enough_identity():

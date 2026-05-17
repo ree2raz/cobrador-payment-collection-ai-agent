@@ -292,6 +292,31 @@ def test_user_volunteers_everything_turn1(mock_edc, mock_ei, mock_eid, mock_la):
     assert agent._conv.state == State.AWAITING_AMOUNT
 
 
+# ── Scenario 7-regex: LLM returns empty on the compound message — regex must save it ─
+
+@patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+@patch("agent.extract_identity", return_value=empty_identity())  # LLM extracts nothing
+@patch("agent.extract_amount", return_value=mock_amount(None))   # opportunistic payment scan
+@patch("agent.extract_card", return_value=mock_card())            # opportunistic payment scan
+def test_compound_first_turn_regex_fallback(mock_ec, mock_ea, mock_ei, mock_eid, mock_la):
+    """The motivating bug: gpt-5.4 sometimes returns empty extraction for
+    dense compound messages like 'Hi, my account is ACC1001, name Nithin Jain,
+    DOB 14th May 1990, I want to pay 400 rupees'. The regex pre-extractor
+    must catch name and DOB so the agent doesn't re-ask. This test mocks the
+    LLM to return empty — only the regex layer can pass this test."""
+    agent = Agent()
+    r = msg(agent.next(
+        "Hi, my account is ACC1001, name Nithin Jain, DOB 14th May 1990, "
+        "I want to pay 400 rupees"
+    ))
+    # Regex caught name + DOB → agent went to DOB confirmation immediately
+    assert agent._conv.provided_name == "Nithin Jain"
+    assert agent._conv.awaiting_dob_confirmation is True
+    assert agent._conv.pending_dob == date(1990, 5, 14)
+    assert "confirm" in r.lower() or "14" in r
+
+
 # ── Scenario 7a: User volunteers amount + card before verification ───────────
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
