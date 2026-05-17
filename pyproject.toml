@@ -27,7 +27,9 @@ dev = [
     "pytest-cov>=7.1.0",
     "respx>=0.23.1",
     "arize-phoenix>=8.0.0",
+    "arize-phoenix-otel>=0.6.0",
     "openinference-instrumentation-openai>=0.1.0",
+    "requests>=2.28.0",
 ]
 
 [tool.pytest.ini_options]

@@ -12,20 +12,33 @@ that call `from observability import setup_phoenix; setup_phoenix()`.
 """
 import os
 
+PHOENIX_ENDPOINT = "http://localhost:6006/v1/traces"
+
 
 def setup_phoenix() -> bool:
-    """Start Phoenix and instrument OpenAI. Returns True if activated."""
+    """Launch Phoenix, register OTEL tracer provider, auto-instrument OpenAI.
+    Returns True if activated."""
     if not os.getenv("PHOENIX"):
         return False
 
     try:
         import phoenix as px
-        from openinference.instrumentation.openai import OpenAIInstrumentor
+        from phoenix.otel import register
 
+        # Start the Phoenix UI server
         px.launch_app()
-        OpenAIInstrumentor().instrument()
-        print("Phoenix running at http://localhost:6006")
+
+        # Register the OTEL tracer provider and auto-instrument OpenAI SDK.
+        # auto_instrument=True picks up openinference-instrumentation-openai
+        # automatically — no manual OpenAIInstrumentor() call needed.
+        register(
+            project_name="cobrador-payment-agent",
+            endpoint=PHOENIX_ENDPOINT,
+            auto_instrument=True,
+        )
+
+        print(f"Phoenix running at http://localhost:6006")
         return True
-    except ImportError:
-        print("Phoenix not installed — run: uv sync (dev deps required)")
+    except ImportError as e:
+        print(f"Phoenix not installed — run: uv sync --group dev. Missing: {e}")
         return False
