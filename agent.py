@@ -68,10 +68,31 @@ class Agent:
         if state in TERMINAL_STATES:
             return R.CLOSING if state == State.CONFIRM_AND_CLOSE else R.ABORTED
 
-        # INIT → always move to AWAITING_ACCOUNT_ID on first message
+        # INIT — first turn. If the user volunteered an account ID (and possibly
+        # identity fields) in the opening message, process it instead of wasting
+        # a turn on a pure greeting. Brief rule: never re-ask for info the user
+        # already provided. A bare greeting falls through to the greeting
+        # response without counting as a failed account-lookup attempt.
         if state == State.INIT:
-            self._conv.transition(State.AWAITING_ACCOUNT_ID, trigger="greeting")
-            return R.GREETING
+            self._conv.transition(State.AWAITING_ACCOUNT_ID, trigger="first_turn")
+            if not user_input:
+                return R.GREETING
+            extraction = extract_account_id(user_input)
+            if extraction.user_intent == "wants_to_cancel":
+                self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
+                return R.ABORTED
+            if extraction.account_id is None:
+                # Greeting / chit-chat with no account ID — don't burn a retry
+                return R.GREETING
+            self._conv.account_id = extraction.account_id
+            response = self._do_lookup()
+            # If lookup succeeded, opportunistically harvest identity fields
+            # from the same opening message before falling back to ASK_IDENTITY.
+            if self._conv.state == State.AWAITING_IDENTITY:
+                opportunistic = self._opportunistic_identity(user_input)
+                if opportunistic is not None:
+                    return opportunistic
+            return response
 
         if state == State.AWAITING_ACCOUNT_ID:
             return self._handle_account_id(user_input)
@@ -233,6 +254,48 @@ class Agent:
         attempts_left = MAX_VERIFICATION_RETRIES - self._conv.verification_retries
         return R.verification_failed_retry(attempts_left)
 
+    def _opportunistic_identity(self, user_input: str) -> str | None:
+        """Harvest identity fields from a message whose primary intent was
+        something else (account ID on turn 1). Returns the next-step user-facing
+        message if any field was captured, else None to fall back to the
+        caller's default response."""
+        already = {
+            "full_name": self._conv.provided_name,
+            "dob": self._conv.provided_dob,
+            "aadhaar_last4": self._conv.provided_aadhaar4,
+            "pincode": self._conv.provided_pincode,
+        }
+        extraction = extract_identity(user_input, already)
+
+        captured = (
+            extraction.full_name is not None
+            or extraction.aadhaar_last4 is not None
+            or extraction.pincode is not None
+            or extraction.dob is not None
+            or extraction.dob_ambiguous
+        )
+        if not captured:
+            return None
+
+        if extraction.full_name is not None:
+            self._conv.provided_name = extraction.full_name
+        if extraction.aadhaar_last4 is not None:
+            self._conv.provided_aadhaar4 = extraction.aadhaar_last4
+        if extraction.pincode is not None:
+            self._conv.provided_pincode = extraction.pincode
+
+        if extraction.dob is not None and not extraction.dob_ambiguous:
+            self._conv.pending_dob = extraction.dob
+            self._conv.awaiting_dob_confirmation = True
+            return R.dob_confirm_prompt(extraction.dob)
+
+        if extraction.dob_ambiguous:
+            return R.dob_ambiguous_prompt()
+
+        if self._conv.has_enough_identity():
+            return self._do_verification()
+        return self._ask_identity()
+
     def _ask_identity(self) -> str:
         has_name = self._conv.provided_name is not None
         has_secondary = (
@@ -287,16 +350,20 @@ class Agent:
         account = self._conv.account
         assert account is not None
 
-        # Build "already collected" context from current card state
+        # Build "already collected" context from current card state. Skip
+        # fields that were cleared by a prior validation error (stored as
+        # empty/zero) so the prompt doesn't claim we have them.
         already: dict = {}
-        if self._conv.card:
-            c = self._conv.card
-            already = {
-                "card_number": f"****{c.card_number[-4:]}",  # masked for prompt context
-                "cvv": "***",
-                "expiry": f"{c.expiry_month:02d}/{c.expiry_year}",
-                "cardholder_name": c.cardholder_name,
-            }
+        c = self._conv.card
+        if c:
+            if c.card_number:
+                already["card_number"] = f"****{c.card_number[-4:]}"
+            if c.cvv:
+                already["cvv"] = "***"
+            if c.expiry_month and c.expiry_year:
+                already["expiry"] = f"{c.expiry_month:02d}/{c.expiry_year}"
+            if c.cardholder_name:
+                already["cardholder_name"] = c.cardholder_name
 
         extraction = extract_card(user_input, already)
 
@@ -304,13 +371,18 @@ class Agent:
             self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
             return R.ABORTED
 
-        # Merge into existing card state
+        # Merge into existing card state. Treat empty string / zero in the
+        # stored partial as "missing" — those values mean a validation error
+        # cleared the field on a prior turn.
+        def _carry(stored):
+            return stored if stored else None
+
         current = self._conv.card
-        card_number = extraction.card_number or (current.card_number if current else None)
-        cvv = extraction.cvv or (current.cvv if current else None)
-        expiry_month = extraction.expiry_month or (current.expiry_month if current else None)
-        expiry_year = extraction.expiry_year or (current.expiry_year if current else None)
-        cardholder_name = extraction.cardholder_name or (current.cardholder_name if current else None)
+        card_number = extraction.card_number or _carry(current.card_number if current else None)
+        cvv = extraction.cvv or _carry(current.cvv if current else None)
+        expiry_month = extraction.expiry_month or _carry(current.expiry_month if current else None)
+        expiry_year = extraction.expiry_year or _carry(current.expiry_year if current else None)
+        cardholder_name = extraction.cardholder_name or _carry(current.cardholder_name if current else None)
 
         # Identify missing fields for re-prompting
         missing = []
@@ -339,17 +411,19 @@ class Agent:
         assert card_number and cvv and expiry_month and expiry_year and cardholder_name
 
         if not luhn_check(card_number):
-            self._conv.payment_retries += 1
-            if self._conv.payment_retries >= MAX_PAYMENT_RETRIES:
-                self._conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger="max_payment_retries")
-                return R.PAYMENT_FAILED_TERMINAL
-            return R.CARD_LUHN_FAILED
+            return self._handle_card_validation_error(
+                "invalid_card", card_number, cvv, expiry_month, expiry_year, cardholder_name
+            )
 
         if not validate_cvv(cvv, card_number):
-            return R.CARD_CVV_INVALID
+            return self._handle_card_validation_error(
+                "invalid_cvv", card_number, cvv, expiry_month, expiry_year, cardholder_name
+            )
 
         if not validate_expiry(expiry_month, expiry_year):
-            return R.CARD_EXPIRED
+            return self._handle_card_validation_error(
+                "invalid_expiry", card_number, cvv, expiry_month, expiry_year, cardholder_name
+            )
 
         # All valid — store and process
         self._conv.card = CardDetails(
@@ -360,6 +434,41 @@ class Agent:
             cardholder_name=cardholder_name,
         )
         return self._do_payment()
+
+    def _handle_card_validation_error(
+        self,
+        error_code: str,
+        card_number: str,
+        cvv: str,
+        expiry_month: int,
+        expiry_year: int,
+        cardholder_name: str,
+    ) -> str:
+        """Centralized client-side card error handling: increment the payment
+        retry counter, persist the non-offending fields so the user only has to
+        re-enter what failed, and return the appropriate message. Terminates
+        the conversation when retries are exhausted."""
+        self._conv.payment_retries += 1
+        if self._conv.payment_retries >= MAX_PAYMENT_RETRIES:
+            self._conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger="max_payment_retries")
+            return R.PAYMENT_FAILED_TERMINAL
+
+        # Save partial card with only the offending field(s) cleared so the
+        # merge in _handle_card on the next turn picks up the user's correction.
+        self._conv.card = CardDetails(
+            card_number="" if error_code == "invalid_card" else card_number,
+            cvv="" if error_code == "invalid_cvv" else cvv,
+            expiry_month=0 if error_code == "invalid_expiry" else expiry_month,
+            expiry_year=0 if error_code == "invalid_expiry" else expiry_year,
+            cardholder_name=cardholder_name,
+        )
+
+        messages = {
+            "invalid_card": R.CARD_LUHN_FAILED,
+            "invalid_cvv": R.CARD_CVV_INVALID,
+            "invalid_expiry": R.CARD_EXPIRED,
+        }
+        return messages[error_code]
 
     def _do_payment(self) -> str:
         conv = self._conv

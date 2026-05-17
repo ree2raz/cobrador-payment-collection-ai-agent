@@ -142,4 +142,21 @@ PERSONAS: list[Persona] = [
         goal="Pay ₹300",
         expected_outcome="payment_success",
     ),
+    Persona(
+        name="turn1_volunteer",
+        account_id="ACC1001",
+        system_prompt=(
+            "You are an efficient, direct user who volunteers everything you can in your very first "
+            "message — before being asked. Your VERY FIRST message must be exactly: "
+            "'Hi, my account is ACC1001, name Nithin Jain, DOB 14th May 1990, I want to pay 400 rupees'. "
+            "Do not greet first and wait — front-load all of it in turn 1. "
+            "If the agent asks you to confirm the DOB, say 'yes, that is correct'. "
+            "When asked for card details, provide: card number 4532015112830366, "
+            "CVV 123, expiry 12/2027, cardholder Nithin Jain. "
+            "The agent MUST NOT re-ask you for your name, account ID, or DOB — those were already "
+            "given in turn 1. If it does, briefly point that out and re-state them."
+        ),
+        goal="Pay ₹400 — having volunteered account/name/DOB in turn 1, the agent should not re-ask",
+        expected_outcome="payment_success",
+    ),
 ]

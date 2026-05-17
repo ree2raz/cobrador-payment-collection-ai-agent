@@ -5,6 +5,7 @@ Uses real FSM, real verification, real validators.
 """
 from __future__ import annotations
 
+import re
 import pytest
 from datetime import date
 from decimal import Decimal
@@ -20,6 +21,34 @@ from output.pii_filter import contains_pii
 def mock_account_id(account_id: str | None, intent="provided_id"):
     from llm.schemas import AccountIdExtraction
     return MagicMock(spec=AccountIdExtraction, account_id=account_id, user_intent=intent)
+
+
+def smart_account_id(text: str):
+    """Realistic content-aware side_effect for extract_account_id.
+
+    The agent now runs extraction on the very first user message (the brief's
+    "user volunteered everything in turn 1" rule), so unconditional
+    return_value mocks would falsely fire on a bare "hi". Detect an ACC ID
+    in the text instead.
+    """
+    m = re.search(r"ACC\d+", text or "", re.IGNORECASE)
+    if m:
+        return mock_account_id(m.group(0).upper())
+    if any(w in (text or "").lower() for w in ("cancel", "stop", "quit", "never mind")):
+        return mock_account_id(None, intent="wants_to_cancel")
+    return mock_account_id(None, intent="off_topic")
+
+
+def empty_identity():
+    """Identity extraction that captured nothing — used for opportunistic
+    LLM calls on first-turn messages that contain only an account ID."""
+    from llm.schemas import IdentityExtraction
+    return MagicMock(
+        spec=IdentityExtraction,
+        full_name=None, dob=None, dob_ambiguous=False,
+        aadhaar_last4=None, pincode=None,
+        user_intent="providing_info",
+    )
 
 
 def mock_identity(name=None, dob=None, dob_ambiguous=False, aadhaar=None, pincode=None, intent="providing_info"):
@@ -89,7 +118,7 @@ def msg(r: dict) -> str:
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
 @patch("agent.process_payment", return_value=mock_payment_success())
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", side_effect=[
     mock_identity(name="Nithin Jain"),
     mock_identity(dob=date(1990, 5, 14)),
@@ -139,7 +168,7 @@ def test_happy_path_acc1001(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_
 # ── Scenario 2: Account not found ───────────────────────────────────────────
 
 @patch("agent.lookup_account", return_value=mock_lookup_not_found())
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC9999"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 def test_account_not_found(mock_eid, mock_la):
     agent = Agent()
     agent.next("hi")
@@ -151,7 +180,7 @@ def test_account_not_found(mock_eid, mock_la):
 # ── Scenario 3: Verification fails 3 times ──────────────────────────────────
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", return_value=mock_identity(name="Wrong Name", dob=date(1999, 1, 1)))
 @patch("agent.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
 def test_verification_fails_terminal(mock_edc, mock_ei, mock_eid, mock_la):
@@ -176,7 +205,7 @@ def test_verification_fails_terminal(mock_edc, mock_ei, mock_eid, mock_la):
 # ── Scenario 4: Zero balance (ACC1003) ──────────────────────────────────────
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1003"))
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1003"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", side_effect=[
     mock_identity(name="Priya Agarwal"),
     mock_identity(dob=date(1992, 8, 10)),
@@ -198,7 +227,7 @@ def test_zero_balance_close(mock_edc, mock_ei, mock_eid, mock_la):
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
 @patch("agent.process_payment", return_value=mock_payment_success())
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", side_effect=[
     mock_identity(name="Nithin Jain"),
     mock_identity(dob=date(1990, 5, 14)),
@@ -227,7 +256,7 @@ def test_invalid_card_then_success(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid
 
 # ── Scenario 6: User cancels mid-flow ───────────────────────────────────────
 
-@patch("agent.extract_account_id", return_value=mock_account_id(None, intent="wants_to_cancel"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 def test_user_cancel(mock_eid):
     agent = Agent()
     agent.next("hi")
@@ -236,35 +265,64 @@ def test_user_cancel(mock_eid):
     assert "goodbye" in r.lower() or "ended" in r.lower()
 
 
-# ── Scenario 7: User provides everything in turn 1 ──────────────────────────
+# ── Scenario 7: User volunteers account + identity on turn 1 ────────────────
+# Brief hard rule: "If a user opens with 'Hi, my name is Nithin, account ACC1001,
+# DOB 1990-05-14, pay ₹500…' the agent must still proceed through the steps
+# cleanly — store everything that was volunteered." This verifies the agent
+# does NOT discard turn-1 info or re-ask for what was already provided.
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
-@patch("agent.process_payment", return_value=mock_payment_success())
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", return_value=mock_identity(
     name="Nithin Jain", dob=date(1990, 5, 14)
 ))
 @patch("agent.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
-@patch("agent.extract_amount", return_value=mock_amount(Decimal("500.00")))
-@patch("agent.extract_card", return_value=mock_card(
-    number="4532015112830366", cvv="123", month=12, year=2027, cardholder="Nithin Jain"
-))
-def test_user_volunteers_everything(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_pp, mock_la):
+def test_user_volunteers_everything_turn1(mock_edc, mock_ei, mock_eid, mock_la):
     agent = Agent()
-    agent.next("hi, my account is ACC1001, name Nithin Jain, DOB May 14 1990")
-    agent.next("ACC1001")
-    # State: AWAITING_IDENTITY — extraction has name+dob already
-    agent.next("Nithin Jain, DOB 14th May 1990")
-    agent.next("yes")  # confirm DOB
-    # Should be at AWAITING_AMOUNT
-    assert agent._conv.state == State.AWAITING_AMOUNT
+    # Turn 1: account ID + name + DOB all in one message
+    r1 = msg(agent.next("hi, my account is ACC1001, name Nithin Jain, DOB May 14 1990"))
+    # Lookup ran, identity was opportunistically harvested, DOB confirm prompt shown
+    assert agent._conv.account_id == "ACC1001"
     assert agent._conv.provided_name == "Nithin Jain"
+    assert agent._conv.awaiting_dob_confirmation is True
+    assert agent._conv.state == State.AWAITING_IDENTITY
+
+    # Turn 2: confirm the DOB — verification runs, balance announced
+    msg(agent.next("yes"))
+    assert agent._conv.state == State.AWAITING_AMOUNT
+
+
+# ── Scenario 7b: Account ID alone on turn 1, no greeting wasted ─────────────
+
+@patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+@patch("agent.extract_identity", return_value=empty_identity())
+def test_first_turn_account_id_only(mock_ei, mock_eid, mock_la):
+    """If the user opens with just an account ID, lookup proceeds immediately
+    instead of replying with a generic greeting and re-asking on turn 2."""
+    agent = Agent()
+    r = msg(agent.next("ACC1001"))
+    # Account looked up, agent now asks for identity (no turn wasted on greeting)
+    assert agent._conv.state == State.AWAITING_IDENTITY
+    assert agent._conv.account_id == "ACC1001"
+    assert "identity" in r.lower() or "name" in r.lower()
+
+
+# ── Scenario 7c: Pure greeting on turn 1 returns greeting ───────────────────
+
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+def test_first_turn_pure_greeting(mock_eid):
+    agent = Agent()
+    r = msg(agent.next("hi"))
+    assert agent._conv.state == State.AWAITING_ACCOUNT_ID
+    # Should be the greeting that asks for account ID
+    assert "account" in r.lower()
 
 
 # ── Scenario 8: Ambiguous DOB ────────────────────────────────────────────────
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", side_effect=[
     mock_identity(name="Nithin Jain"),
     mock_identity(dob=None, dob_ambiguous=True),  # ambiguous
@@ -288,7 +346,7 @@ def test_ambiguous_dob(mock_edc, mock_ei, mock_eid, mock_la):
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
 @patch("agent.process_payment", return_value=mock_payment_failure("invalid_card"))
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", side_effect=[
     mock_identity(name="Nithin Jain"),
     mock_identity(dob=date(1990, 5, 14)),
@@ -315,7 +373,7 @@ def test_payment_invalid_card_error(mock_ec, mock_ea, mock_edc, mock_ei, mock_ei
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1004"))
 @patch("agent.process_payment", return_value=mock_payment_success())
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1004"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", side_effect=[
     mock_identity(name="Rahul Mehta"),
     mock_identity(dob=date(1988, 2, 29)),
@@ -340,7 +398,7 @@ def test_leap_year_acc1004(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_p
 # ── Scenario 11: Expired card ───────────────────────────────────────────────
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", side_effect=[
     mock_identity(name="Nithin Jain"),
     mock_identity(dob=date(1990, 5, 14)),
@@ -361,13 +419,97 @@ def test_expired_card(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_la):
     r = msg(agent.next("expired card"))
     assert agent._conv.state == State.AWAITING_CARD
     assert "expired" in r.lower() or "expiry" in r.lower() or "invalid" in r.lower()
+    # Expired card must increment the payment retry counter (previously it
+    # didn't, allowing the user to loop forever on invalid expiry).
+    assert agent._conv.payment_retries == 1
+
+
+# ── Scenario 11b: Invalid CVV increments retries (regression) ───────────────
+
+@patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+@patch("agent.extract_identity", side_effect=[
+    mock_identity(name="Nithin Jain"),
+    mock_identity(dob=date(1990, 5, 14)),
+])
+@patch("agent.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
+@patch("agent.extract_amount", return_value=mock_amount(Decimal("500.00")))
+@patch("agent.extract_card", return_value=mock_card(
+    number="4532015112830366", cvv="12", month=12, year=2027, cardholder="Nithin Jain"  # CVV too short
+))
+def test_invalid_cvv_increments_retries(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_la):
+    agent = Agent()
+    agent.next("hi"); agent.next("ACC1001"); agent.next("Nithin Jain")
+    agent.next("DOB"); agent.next("yes"); agent.next("500")
+    r = msg(agent.next("4532015112830366, exp 12/2027, CVV 12, Nithin Jain"))
+    assert agent._conv.state == State.AWAITING_CARD
+    assert "cvv" in r.lower()
+    assert agent._conv.payment_retries == 1
+
+
+# ── Scenario 11c: Card validation retries exhaust → TERMINAL_PAYMENT_FAILED ──
+
+@patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+@patch("agent.extract_identity", side_effect=[
+    mock_identity(name="Nithin Jain"),
+    mock_identity(dob=date(1990, 5, 14)),
+])
+@patch("agent.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
+@patch("agent.extract_amount", return_value=mock_amount(Decimal("500.00")))
+@patch("agent.extract_card", side_effect=[
+    # Three consecutive invalid CVVs → exhaust payment retries
+    mock_card(number="4532015112830366", cvv="12", month=12, year=2027, cardholder="Nithin Jain"),
+    mock_card(number="4532015112830366", cvv="1", month=12, year=2027, cardholder="Nithin Jain"),
+    mock_card(number="4532015112830366", cvv="ab", month=12, year=2027, cardholder="Nithin Jain"),
+])
+def test_card_retries_exhausted_terminal(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_la):
+    agent = Agent()
+    agent.next("hi"); agent.next("ACC1001"); agent.next("Nithin Jain")
+    agent.next("DOB"); agent.next("yes"); agent.next("500")
+    agent.next("bad cvv 1")
+    agent.next("bad cvv 2")
+    r = msg(agent.next("bad cvv 3"))
+    assert agent._conv.state == State.TERMINAL_PAYMENT_FAILED
+    assert "unable" in r.lower() or "sorry" in r.lower()
+
+
+# ── Scenario 11d: After CVV error, user only re-enters CVV ──────────────────
+# Tests that the centralized error handler preserves non-offending fields so
+# the user doesn't have to retype the entire card.
+
+@patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("agent.process_payment", return_value=mock_payment_success())
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+@patch("agent.extract_identity", side_effect=[
+    mock_identity(name="Nithin Jain"),
+    mock_identity(dob=date(1990, 5, 14)),
+])
+@patch("agent.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
+@patch("agent.extract_amount", return_value=mock_amount(Decimal("500.00")))
+@patch("agent.extract_card", side_effect=[
+    # First: full card with invalid CVV
+    mock_card(number="4532015112830366", cvv="12", month=12, year=2027, cardholder="Nithin Jain"),
+    # Second: only the corrected CVV (other fields should carry over from state)
+    mock_card(cvv="123"),
+])
+def test_cvv_error_preserves_other_fields(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_pp, mock_la):
+    agent = Agent()
+    agent.next("hi"); agent.next("ACC1001"); agent.next("Nithin Jain")
+    agent.next("DOB"); agent.next("yes"); agent.next("500")
+    agent.next("full card with bad CVV")
+    # Now user only sends the corrected CVV — payment should succeed because
+    # card_number, expiry, and cardholder_name are still in state.
+    r = msg(agent.next("CVV is 123"))
+    assert agent._conv.state == State.CONFIRM_AND_CLOSE
+    assert "txn_TEST123" in r
 
 
 # ── Scenario 12: Out-of-order info (name provided before asked) ──────────────
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
 @patch("agent.process_payment", return_value=mock_payment_success())
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", side_effect=[
     # User provides name AND aadhaar in one message
     mock_identity(name="Nithin Jain", aadhaar="4321"),
@@ -392,7 +534,7 @@ def test_out_of_order_info(mock_ec, mock_ea, mock_ei, mock_eid, mock_pp, mock_la
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
 @patch("agent.process_payment", return_value=mock_payment_success())
-@patch("agent.extract_account_id", return_value=mock_account_id("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
 @patch("agent.extract_identity", side_effect=[
     mock_identity(name="Nithin Jain"),
     mock_identity(dob=date(1990, 5, 14)),
