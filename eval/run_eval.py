@@ -230,14 +230,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Error: OPENAI_API_KEY not set.")
+    # Tier 1 and 2 are pure pytest — no live LLM, no key required. Only gate
+    # the key check on tiers/modes that actually hit OpenAI.
+    needs_api_key = args.tier in ("3", "all") or args.messy
+    if needs_api_key and not os.getenv("OPENAI_API_KEY"):
+        print("Error: OPENAI_API_KEY not set (required for Tier 3 / --messy).")
         sys.exit(1)
 
     if args.personas and args.tier not in ("3", "all"):
         print("Warning: --personas only applies to Tier 3.")
 
-    setup_phoenix()
+    if needs_api_key:
+        setup_phoenix()
 
     if args.tier in ("1", "2", "all"):
         passed = run_tier1_and_2()

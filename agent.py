@@ -9,7 +9,7 @@ LLM response generation is reserved for dynamic content (balance, confirmation).
 from __future__ import annotations
 
 import logging
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from core.state_machine import (
     CardDetails,
@@ -20,7 +20,6 @@ from core.state_machine import (
 from core.validators import (
     luhn_check,
     validate_amount,
-    validate_card_number,
     validate_cvv,
     validate_expiry,
 )
@@ -43,7 +42,6 @@ MAX_ACCOUNT_LOOKUP_RETRIES = 3
 MAX_PAYMENT_RETRIES = 3
 
 RETRYABLE_PAYMENT_ERRORS = {"invalid_card", "invalid_cvv", "invalid_expiry", "server_error"}
-TERMINAL_PAYMENT_ERRORS = {"insufficient_balance", "invalid_amount"}
 
 
 class Agent:

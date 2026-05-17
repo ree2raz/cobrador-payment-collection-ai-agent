@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class AccountIdExtraction(BaseModel):
