@@ -50,7 +50,7 @@ cobrador/
 │   ├── judge.py           # LLM-as-judge scoring
 │   ├── messy_cases.py     # 21 production-style messy extraction test cases
 │   └── run_eval.py        # Three-tier eval runner CLI
-└── tests/                 # 104 tests (Tier 1 + Tier 2, 100% passing)
+└── tests/                 # 124 deterministic tests passing + 21 live LLM tests skipped offline
     └── test_extraction_messy.py  # Tier 1.5: live LLM messy extraction tests
 ```
 
@@ -86,12 +86,14 @@ PHOENIX=1 uv run python -m eval.run_eval --tier 3
 
 | Suite | Tests | Result |
 |-------|-------|--------|
-| Validator correctness (Luhn, date, CVV, amount) | 24 | ✅ 100% |
-| Verification truth table (16-row name × DOB × Aadhaar × pincode) | 16 | ✅ 100% |
-| State machine transition allow-list | 8 | ✅ 100% |
-| PII filter — no leakage under any input | 12 | ✅ 100% |
-| Scripted multi-turn scenarios (all 4 accounts + all failure paths) | 44 | ✅ 100% |
-| **Total** | **104** | **✅ 104/104** |
+| Normalization helpers | 14 | ✅ 100% |
+| Validator correctness (Luhn, date, CVV, amount) | 31 | ✅ 100% |
+| Verification truth table + account-specific cases | 23 | ✅ 100% |
+| State machine transition allow-list | 13 | ✅ 100% |
+| PII filter — DOB/Aadhaar/pincode variants | 17 | ✅ 100% |
+| API payload/retry behavior | 2 | ✅ 100% |
+| Scripted multi-turn scenarios (all 4 accounts + failure paths) | 24 | ✅ 100% |
+| **Total** | **124** | **✅ 124/124** |
 
 ### Tier 1.5 — Messy Extraction Accuracy
 
@@ -108,7 +110,10 @@ ambiguous dates, full 12-digit Aadhaar, leap-year DOB.
 | card (spaced number, verbal CVV, verbal expiry) | 3/3 | ✅ 100% |
 | **Total** | **21/21** | **✅ 100%** |
 
-### Tier 3 — Persona Simulation (10 personas, LLM-as-judge)
+### Tier 3 — Persona Simulation (11 personas, LLM-as-judge)
+
+Latest recorded live run below was captured before adding the extra `turn1_volunteer`
+persona; rerun `uv run python -m eval.run_eval --tier 3` to refresh these aggregate metrics.
 
 | Metric | Score | Notes |
 |--------|-------|-------|
@@ -197,7 +202,4 @@ Base URL: `https://se-payment-verification-api.service.external.usea2.aws.prodig
 | `httpx>=0.27.0` | HTTP client for payment API |
 | `pydantic>=2.7.0` | Structured output models (v2) |
 | `tenacity>=8.3.0` | Retry with exponential backoff on API calls |
-| `python-dateutil>=2.9.0` | Robust date parsing (handles leap years) |
-| `structlog>=24.1.0` | Structured logging |
-
-Dev: `pytest`, `pytest-asyncio`, `pytest-cov`, `respx`, `arize-phoenix`, `arize-phoenix-otel`, `openinference-instrumentation-openai`
+Dev: `pytest`, `pytest-cov`, `arize-phoenix`, `arize-phoenix-otel`, `openinference-instrumentation-openai`

@@ -26,6 +26,18 @@ class TestContainsPii:
         acc = make_account()
         assert contains_pii("Your DOB is 1990-05-14.", acc) is True
 
+    @pytest.mark.parametrize("dob_text", [
+        "14th May 1990",
+        "14 May, 1990",
+        "May 14th 1990",
+        "May 14, 1990",
+        "14/05/90",
+        "05/14/90",
+    ])
+    def test_dob_common_variants(self, dob_text):
+        acc = make_account()
+        assert contains_pii(f"The date on file is {dob_text}.", acc) is True
+
     def test_aadhaar_last4(self):
         acc = make_account()
         assert contains_pii("Your Aadhaar ends with 4321.", acc) is True
@@ -44,6 +56,13 @@ class TestRedactPii:
         msg = "DOB on file is 1990-05-14."
         result = redact_pii(msg, acc)
         assert "1990-05-14" not in result
+        assert "[REDACTED]" in result
+
+    def test_redacts_dob_with_ordinal_text(self):
+        acc = make_account()
+        msg = "DOB on file is 14th May 1990."
+        result = redact_pii(msg, acc)
+        assert "14th May 1990" not in result
         assert "[REDACTED]" in result
 
     def test_redacts_aadhaar(self):

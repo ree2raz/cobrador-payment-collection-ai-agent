@@ -1,6 +1,7 @@
 import pytest
 from core.state_machine import (
     ALLOWED_TRANSITIONS,
+    InvalidTransitionError,
     TERMINAL_STATES,
     ConversationState,
     State,
@@ -36,7 +37,7 @@ class TestConversationStateTransition:
 
     def test_invalid_transition_raises(self):
         conv = ConversationState()
-        with pytest.raises(AssertionError):
+        with pytest.raises(InvalidTransitionError):
             conv.transition(State.CONFIRM_AND_CLOSE)
 
     def test_transition_logged(self):
