@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Eval runner — three tiers:
+Eval runner — three tiers + messy extraction accuracy:
   Tier 1: Unit tests (run via pytest)
   Tier 2: Scripted scenarios (run via pytest)
   Tier 3: Persona simulation with LLM-as-judge
+  --messy: Extraction accuracy on 21 production-style messy inputs
 
 Usage:
   uv run python -m eval.run_eval --tier 3
   uv run python -m eval.run_eval --tier all
   uv run python -m eval.run_eval --tier 3 --personas cooperative rambling terse
+  uv run python -m eval.run_eval --messy
+  uv run python -m eval.run_eval --tier all --messy
 """
 from __future__ import annotations
 
@@ -44,6 +47,84 @@ def run_tier1_and_2() -> bool:
         capture_output=False,
     )
     return result.returncode == 0
+
+
+def run_messy() -> dict:
+    """Run messy extraction accuracy tests and print a grouped summary table."""
+    from eval.messy_cases import MESSY_CASES, run_case
+
+    print("\n" + "=" * 60)
+    print("MESSY EXTRACTION ACCURACY  (21 production-style inputs)")
+    print("=" * 60)
+
+    group_results: dict[str, list[tuple[str, bool, str]]] = {}
+
+    for case in MESSY_CASES:
+        try:
+            result = run_case(case)
+            actual = getattr(result, case.check_field)
+            passed = actual == case.expected
+            actual_str = repr(actual)
+        except Exception as e:
+            passed = False
+            actual_str = f"ERROR: {e}"
+
+        tick = "✓" if passed else "✗"
+        print(f"  [{tick}] [{case.group:10}] {case.label}")
+        group_results.setdefault(case.group, []).append((case.label, passed, actual_str))
+
+    # Summary table
+    print("\n" + "=" * 60)
+    total_pass = total_n = 0
+    group_rows = []
+    for group, rows in group_results.items():
+        n_pass = sum(1 for _, p, _ in rows)
+        n = len(rows)
+        total_pass += n_pass
+        total_n += n
+        filled = int(16 * n_pass / n)
+        bar = "█" * filled + "░" * (16 - filled)
+        group_rows.append((group, bar, n_pass, n, 100 * n_pass // n))
+
+    print(f"  {'GROUP':<12}  {'':16}  PASS   PCT")
+    print("  " + "-" * 46)
+    for group, bar, n_pass, n, pct in group_rows:
+        print(f"  {group:<12}  {bar}  {n_pass}/{n}   {pct:>3}%")
+    print("  " + "-" * 46)
+    filled = int(16 * total_pass / total_n)
+    bar = "█" * filled + "░" * (16 - filled)
+    pct = 100 * total_pass // total_n
+    print(f"  {'TOTAL':<12}  {bar}  {total_pass}/{total_n}   {pct:>3}%")
+
+    # Failures
+    failures = [
+        (g, label, actual)
+        for g, rows in group_results.items()
+        for label, passed, actual in rows
+        if not passed
+    ]
+    if failures:
+        print(f"\nFailed:")
+        for group, label, actual in failures:
+            print(f"  [{group}] {label!r} → {actual}")
+
+    output = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "total_pass": total_pass,
+        "total_cases": total_n,
+        "accuracy": round(total_pass / total_n, 3),
+        "by_group": {
+            g: {"pass": sum(1 for _, p, _ in r), "total": len(r)}
+            for g, r in group_results.items()
+        },
+    }
+
+    RESULTS_DIR.mkdir(exist_ok=True)
+    out_path = RESULTS_DIR / f"messy_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+    out_path.write_text(json.dumps(output, indent=2))
+    print(f"\nResults saved to {out_path}")
+
+    return output
 
 
 def run_tier3(persona_filter: list[str] | None = None) -> dict:
@@ -142,6 +223,11 @@ def main() -> None:
         help="Run only specific personas (Tier 3 only). "
              "Example: --personas cooperative rambling terse",
     )
+    parser.add_argument(
+        "--messy",
+        action="store_true",
+        help="Run messy extraction accuracy tests (21 production-style inputs).",
+    )
     args = parser.parse_args()
 
     if not os.getenv("OPENAI_API_KEY"):
@@ -160,6 +246,9 @@ def main() -> None:
 
     if args.tier in ("3", "all"):
         run_tier3(persona_filter=args.personas)
+
+    if args.messy:
+        run_messy()
 
 
 if __name__ == "__main__":

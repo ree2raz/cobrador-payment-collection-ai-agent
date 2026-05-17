@@ -36,6 +36,9 @@ dev = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
+markers = [
+    "integration: live LLM tests requiring OPENAI_API_KEY — skipped in offline CI",
+]
 
 [tool.uv]
 # Cutoff set to 2026-05-08 (one day after urllib3 2.7.0 release) to include the

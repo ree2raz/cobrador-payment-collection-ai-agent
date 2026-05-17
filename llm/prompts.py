@@ -28,17 +28,31 @@ IDENTITY_EXTRACTION = (
     "{already_collected}\n\n"
     "RULES:\n"
     "1. Only extract what the user EXPLICITLY stated in their LATEST message. Do not infer or guess.\n"
-    "2. For names: preserve the user's original capitalization exactly. Trim whitespace only.\n"
-    "3. For DOB: only set dob if you are certain of day, month AND year. If the format could be "
+    "2. For names: strip common honorifics (Mr., Mrs., Ms., Dr., Sir, Madam, Shri, Smt., Ji) "
+    "from the extracted name. Preserve original capitalization of the name itself. Trim whitespace. "
+    "Ignore filler words like 'sir', 'actually', 'wait no' around the name.\n"
+    "3. For DOB: only set dob if you are certain of day, month AND year. Convert verbal dates "
+    "(e.g. 'fourteenth may nineteen ninety' → 1990-05-14). If the format could be "
     "DD-MM or MM-DD (e.g. '01-02-1990'), set dob = null and dob_ambiguous = true.\n"
     "4. For Aadhaar: extract only the last 4 digits. If user states their full 12-digit Aadhaar, "
-    "extract only the last 4 — NEVER output the full number.\n"
+    "extract only the last 4 — NEVER output the full number. Convert verbal digits "
+    "('nine eight seven six' → '9876').\n"
     "5. For pincode: must be exactly 6 digits. '4 0 0 0 0 1' → '400001'.\n"
-    "6. user_intent: classify the primary purpose of their message.\n"
-    '7. If user says "stop", "cancel", "quit", "end" → user_intent = "wants_to_cancel".\n\n'
+    "6. The user may mix Hindi/English (Hinglish). Understand the meaning and extract the field.\n"
+    "7. user_intent: classify the primary purpose of their message.\n"
+    '8. If user says "stop", "cancel", "quit", "end" → user_intent = "wants_to_cancel".\n\n'
     "EXAMPLES:\n"
     '"my name is Nithin Jain and DOB 14th May 1990"\n'
     '→ {{"full_name": "Nithin Jain", "dob": "1990-05-14", "dob_ambiguous": false, '
+    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
+    '"Mr. Rahul Mehta here"\n'
+    '→ {{"full_name": "Rahul Mehta", "dob": null, "dob_ambiguous": false, '
+    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
+    '"naam Nithin Jain hai"\n'
+    '→ {{"full_name": "Nithin Jain", "dob": null, "dob_ambiguous": false, '
+    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
+    '"born on fourteenth may nineteen ninety"\n'
+    '→ {{"full_name": null, "dob": "1990-05-14", "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
     '"I was born 01-02-90"\n'
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": true, '
@@ -46,9 +60,9 @@ IDENTITY_EXTRACTION = (
     '"you can call me Raja but my full name is Rajarajeswari Balasubramaniam"\n'
     '→ {{"full_name": "Rajarajeswari Balasubramaniam", "dob": null, "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
-    '"last four of my Aadhaar is 4321"\n'
+    '"aadhaar last four is nine eight seven six"\n'
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": false, '
-    '"aadhaar_last4": "4321", "pincode": null, "user_intent": "providing_info"}}\n\n'
+    '"aadhaar_last4": "9876", "pincode": null, "user_intent": "providing_info"}}\n\n'
     '"my Aadhaar number is 1234 5678 4321"\n'
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": false, '
     '"aadhaar_last4": "4321", "pincode": null, "user_intent": "providing_info"}}\n\n'
