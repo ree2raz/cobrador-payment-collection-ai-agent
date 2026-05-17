@@ -8,6 +8,7 @@ Eval runner — three tiers:
 Usage:
   uv run python -m eval.run_eval --tier 3
   uv run python -m eval.run_eval --tier all
+  uv run python -m eval.run_eval --tier 3 --personas cooperative rambling terse
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import logging
 import os
 import subprocess
 import sys
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,16 +46,26 @@ def run_tier1_and_2() -> bool:
     return result.returncode == 0
 
 
-def run_tier3() -> dict:
+def run_tier3(persona_filter: list[str] | None = None) -> dict:
     """Run persona simulation + LLM-as-judge."""
     print("\n" + "=" * 60)
     print("TIER 3: Persona Simulation")
     print("=" * 60)
 
+    personas = PERSONAS
+    if persona_filter:
+        names = set(persona_filter)
+        personas = [p for p in PERSONAS if p.name in names]
+        unknown = names - {p.name for p in personas}
+        if unknown:
+            print(f"Warning: unknown persona(s): {', '.join(sorted(unknown))}")
+            print(f"Valid names: {', '.join(p.name for p in PERSONAS)}")
+        print(f"Running {len(personas)} persona(s): {', '.join(p.name for p in personas)}")
+
     all_scores = []
     summary_rows = []
 
-    for persona in PERSONAS:
+    for persona in personas:
         print(f"\n--- Persona: {persona.name} ---")
         try:
             result = simulate(persona)
@@ -85,8 +97,9 @@ def run_tier3() -> dict:
                 print(f"  Issues:  {score.issues}")
 
         except Exception as e:
-            logger.error("Persona %s failed: %s", persona.name, e, exc_info=True)
-            summary_rows.append({"persona": persona.name, "error": str(e)})
+            tb = traceback.format_exc()
+            logger.error("Persona %s failed: %s\n%s", persona.name, e, tb)
+            summary_rows.append({"persona": persona.name, "error": str(e) or repr(e), "traceback": tb})
 
     # Aggregate metrics
     scored = [r for r in all_scores if "task_completion" in r]
@@ -122,11 +135,21 @@ def run_tier3() -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run evaluation tiers")
     parser.add_argument("--tier", choices=["1", "2", "3", "all"], default="all")
+    parser.add_argument(
+        "--personas",
+        nargs="+",
+        metavar="NAME",
+        help="Run only specific personas (Tier 3 only). "
+             "Example: --personas cooperative rambling terse",
+    )
     args = parser.parse_args()
 
     if not os.getenv("OPENAI_API_KEY"):
         print("Error: OPENAI_API_KEY not set.")
         sys.exit(1)
+
+    if args.personas and args.tier not in ("3", "all"):
+        print("Warning: --personas only applies to Tier 3.")
 
     setup_phoenix()
 
@@ -136,7 +159,7 @@ def main() -> None:
             sys.exit(1)
 
     if args.tier in ("3", "all"):
-        run_tier3()
+        run_tier3(persona_filter=args.personas)
 
 
 if __name__ == "__main__":

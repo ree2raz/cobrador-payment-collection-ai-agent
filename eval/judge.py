@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from eval.simulator import SimulationResult
 
-JUDGE_MODEL = os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini")
+JUDGE_MODEL = os.getenv("OPENAI_FAST_MODEL", "gpt-5.4-mini")
 
 JUDGE_PROMPT = """
 You are evaluating a conversation between a payment collection agent and a customer.

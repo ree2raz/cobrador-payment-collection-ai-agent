@@ -15,7 +15,7 @@ from eval.personas import Persona
 
 logger = logging.getLogger(__name__)
 
-SIMULATOR_MODEL = os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini")
+SIMULATOR_MODEL = os.getenv("OPENAI_FAST_MODEL", "gpt-5.4-mini")
 MAX_TURNS = 25
 
 

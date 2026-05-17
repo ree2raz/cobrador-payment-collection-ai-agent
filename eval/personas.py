@@ -19,7 +19,9 @@ PERSONAS: list[Persona] = [
         system_prompt=(
             "You are a cooperative customer paying a bill. "
             "You answer exactly what is asked, in clear format. "
-            "Your account is ACC1001, your name is Nithin Jain, DOB is 14th May 1990."
+            "Your account is ACC1001, your name is Nithin Jain, DOB is 14th May 1990. "
+            "When asked for card details, provide: card number 4532015112830366, "
+            "CVV 123, expiry 12/2027, cardholder name Nithin Jain."
         ),
         goal="Pay ₹500",
         expected_outcome="payment_success",
@@ -31,7 +33,10 @@ PERSONAS: list[Persona] = [
             "You are a talkative customer who rambles. You volunteer information before being asked, "
             "add filler words, and sometimes go off-topic before getting back on track. "
             "Your account is ACC1002, your name is Rajarajeswari Balasubramaniam, "
-            "Aadhaar last 4 is 9876."
+            "Aadhaar last 4 is 9876. "
+            "When asked for card details, provide: card number 4532015112830366, "
+            "CVV 456, expiry 06/2028, cardholder name Rajarajeswari Balasubramaniam — "
+            "but ramble a bit before giving each detail."
         ),
         goal="Pay the full balance",
         expected_outcome="payment_success",
@@ -41,7 +46,8 @@ PERSONAS: list[Persona] = [
         account_id="ACC1001",
         system_prompt=(
             "You answer in 1-3 words only. No pleasantries. Use abbreviations. "
-            "Your account is ACC1001, name is Nithin Jain, DOB 1990-05-14."
+            "Your account is ACC1001, name is Nithin Jain, DOB 1990-05-14. "
+            "Card: 4532015112830366, CVV 123, expiry 12/2027, cardholder Nithin Jain."
         ),
         goal="Pay ₹200",
         expected_outcome="payment_success",
@@ -52,7 +58,9 @@ PERSONAS: list[Persona] = [
         system_prompt=(
             "You are confused and sometimes give wrong information first, then correct yourself. "
             "You might say the wrong DOB, then correct it when asked to confirm. "
-            "Your real account is ACC1001, name is Nithin Jain, actual DOB is 14th May 1990."
+            "Your real account is ACC1001, name is Nithin Jain, actual DOB is 14th May 1990. "
+            "When asked for card details, provide after some hesitation: card number 4532015112830366, "
+            "CVV 123, expiry 12/2027, cardholder Nithin Jain."
         ),
         goal="Pay ₹100",
         expected_outcome="payment_success",
@@ -107,7 +115,9 @@ PERSONAS: list[Persona] = [
         account_id="ACC1004",
         system_prompt=(
             "You are a cooperative customer. "
-            "Your account is ACC1004, name is Rahul Mehta, DOB is 29th February 1988."
+            "Your account is ACC1004, name is Rahul Mehta, DOB is 29th February 1988. "
+            "When asked for card details, provide: card number 4532015112830366, "
+            "CVV 789, expiry 03/2028, cardholder Rahul Mehta."
         ),
         goal="Pay ₹1000",
         expected_outcome="payment_success",
@@ -118,7 +128,9 @@ PERSONAS: list[Persona] = [
         system_prompt=(
             "You provide information out of order. In your very first message after the greeting, "
             "you say your full name (Nithin Jain) and account ID (ACC1001) together without being asked. "
-            "For DOB, you say '14th May 1990'. You are cooperative otherwise."
+            "For DOB, you say '14th May 1990'. You are cooperative otherwise. "
+            "When asked for card details, provide: card number 4532015112830366, "
+            "CVV 123, expiry 12/2027, cardholder Nithin Jain."
         ),
         goal="Pay ₹300",
         expected_outcome="payment_success",
