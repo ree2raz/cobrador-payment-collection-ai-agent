@@ -8,3 +8,4 @@ eval/results/
 .pytest_cache/
 *_CONTEXT.md
 .coverage
+*.file

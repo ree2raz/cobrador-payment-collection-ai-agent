@@ -9,23 +9,17 @@ ACCOUNT_ID_EXTRACTION = (
     "RULES:\n"
     "1. Only extract what the user EXPLICITLY stated. Do not guess.\n"
     "2. Account IDs follow the pattern ACC + digits (e.g. ACC1001). Normalize: "
-    "strip spaces/hyphens, uppercase. Convert verbal digits to numerals "
-    "('one zero zero one' → '1001', 'triple zero one' → '0001').\n"
+    "strip spaces/hyphens, uppercase.\n"
     "3. The message may also contain unrelated information (name, DOB, payment "
-    "intent, greeting) — extract the account ID anyway. Do not require the "
-    "message's primary topic to be the account ID.\n"
+    "intent, greeting). Extract the account ID anyway.\n"
     '4. If the user clearly provided an account ID, set account_id and user_intent = "provided_id".\n'
     '5. If the user is asking a question without providing an ID, set user_intent = "asking_question".\n'
     '6. If the user says "stop", "cancel", "quit", "end", set user_intent = "wants_to_cancel".\n\n'
     "EXAMPLES:\n"
-    '"yeah my account number is ACC1001 I think" → {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
+    '"my account number is ACC1001" → {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
     '"it\'s ACC 1001" → {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
     '"account id: acc1001" → {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
-    "// Verbal digits — common in voice transcripts:\n"
-    '"my account id is acc one zero zero one" → {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
-    '"account A C C one zero zero two" → {{"account_id": "ACC1002", "user_intent": "provided_id"}}\n'
-    "// Compound message — account ID buried among other info:\n"
-    '"Hi I am Nithin Jain, my account id is acc one zero zero one, DOB May 14 1990, pay 400" '
+    '"Hi I am Nithin Jain, my account id is acc1001, pay 400" '
     '→ {{"account_id": "ACC1001", "user_intent": "provided_id"}}\n'
     '"I\'m not sure what my account ID is" → {{"account_id": null, "user_intent": "asking_question"}}\n'
     '"cancel" → {{"account_id": null, "user_intent": "wants_to_cancel"}}\n\n'
@@ -39,56 +33,41 @@ IDENTITY_EXTRACTION = (
     "{already_collected}\n\n"
     "RULES:\n"
     "1. Extract every identity field the user explicitly stated, even if the message ALSO "
-    "contains unrelated information like an account ID, a payment amount, a greeting, or "
-    "a question. Do not skip identity fields just because the message's primary topic "
-    "is something else — the user may front-load everything in one message.\n"
-    "2. For names: strip common honorifics (Mr., Mrs., Ms., Dr., Sir, Madam, Shri, Smt., Ji) "
-    "from the extracted name. Preserve original capitalization of the name itself. Trim whitespace. "
-    "Ignore filler words like 'sir', 'actually', 'wait no' around the name.\n"
-    "3. For DOB: only set dob if you are certain of day, month AND year. Convert verbal dates "
-    "(e.g. 'fourteenth may nineteen ninety' → 1990-05-14). If the format could be "
-    "DD-MM or MM-DD (e.g. '01-02-1990'), set dob = null and dob_ambiguous = true.\n"
-    "4. For Aadhaar: extract only the last 4 digits. If user states their full 12-digit Aadhaar, "
-    "extract only the last 4 — NEVER output the full number. Convert verbal digits "
-    "('nine eight seven six' → '9876').\n"
-    "5. For pincode: must be exactly 6 digits. '4 0 0 0 0 1' → '400001'.\n"
-    "6. The user may mix Hindi/English (Hinglish). Understand the meaning and extract the field.\n"
-    "7. user_intent: classify the primary purpose of their message.\n"
-    '8. If user says "stop", "cancel", "quit", "end" → user_intent = "wants_to_cancel".\n\n'
+    "contains unrelated information like an account ID, a payment amount, or a greeting. "
+    "Case-insensitive — names may be lowercase ('i am nithin jain' → 'Nithin Jain'). "
+    "Title-case the extracted name.\n"
+    "2. For names: strip common honorifics (Mr., Mrs., Ms., Dr., Sir, Madam) from the "
+    "extracted name. Trim whitespace. If the user gives a nickname and a full name "
+    "(e.g. 'call me Raja but my full name is Rajarajeswari Balasubramaniam'), extract "
+    "the FULL name, not the nickname.\n"
+    "3. For DOB: only set dob if you are certain of day, month AND year. If the format "
+    "could be DD-MM or MM-DD (e.g. '01-02-1990'), set dob = null and dob_ambiguous = true.\n"
+    "4. For Aadhaar: extract only the last 4 digits. If user states their full 12-digit "
+    "Aadhaar, extract only the last 4 — NEVER output the full number.\n"
+    "5. For pincode: must be exactly 6 digits.\n"
+    "6. user_intent: classify the primary purpose of their message.\n"
+    '7. If user says "stop", "cancel", "quit", "end" → user_intent = "wants_to_cancel".\n\n'
     "EXAMPLES:\n"
     '"my name is Nithin Jain and DOB 14th May 1990"\n'
     '→ {{"full_name": "Nithin Jain", "dob": "1990-05-14", "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
-    "// Compound first-turn message — extract identity fields even though the "
-    "// message also contains account ID, payment intent, and a greeting:\n"
-    '"Hi, my account is ACC1001, name Nithin Jain, DOB 14th May 1990, I want to pay 400 rupees"\n'
+    '"Hi i am nithin jain, my account id is acc1001, my dob is 14 may 1990"\n'
     '→ {{"full_name": "Nithin Jain", "dob": "1990-05-14", "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
-    '"ACC1002 here, Rajarajeswari Balasubramaniam, aadhaar ends 9876"\n'
-    '→ {{"full_name": "Rajarajeswari Balasubramaniam", "dob": null, "dob_ambiguous": false, '
-    '"aadhaar_last4": "9876", "pincode": null, "user_intent": "providing_info"}}\n\n'
-    '"Mr. Rahul Mehta here"\n'
+    '"Mr. Rahul Mehta here, aadhaar ends 9876"\n'
     '→ {{"full_name": "Rahul Mehta", "dob": null, "dob_ambiguous": false, '
-    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
-    '"naam Nithin Jain hai"\n'
-    '→ {{"full_name": "Nithin Jain", "dob": null, "dob_ambiguous": false, '
-    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
-    '"born on fourteenth may nineteen ninety"\n'
-    '→ {{"full_name": null, "dob": "1990-05-14", "dob_ambiguous": false, '
+    '"aadhaar_last4": "9876", "pincode": null, "user_intent": "providing_info"}}\n\n'
+    "// Nickname + full name — always pick the full name:\n"
+    '"you can call me Raja but my full name is Rajarajeswari Balasubramaniam"\n'
+    '→ {{"full_name": "Rajarajeswari Balasubramaniam", "dob": null, "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
     '"I was born 01-02-90"\n'
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": true, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
-    '"you can call me Raja but my full name is Rajarajeswari Balasubramaniam"\n'
-    '→ {{"full_name": "Rajarajeswari Balasubramaniam", "dob": null, "dob_ambiguous": false, '
-    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
-    '"aadhaar last four is nine eight seven six"\n'
-    '→ {{"full_name": null, "dob": null, "dob_ambiguous": false, '
-    '"aadhaar_last4": "9876", "pincode": null, "user_intent": "providing_info"}}\n\n'
     '"my Aadhaar number is 1234 5678 4321"\n'
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": false, '
     '"aadhaar_last4": "4321", "pincode": null, "user_intent": "providing_info"}}\n\n'
-    '"pincode? it\'s 4 0 0 0 0 1"\n'
+    '"pincode 400001"\n'
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": "400001", "user_intent": "providing_info"}}\n\n'
     "User's message: {user_input}"
@@ -134,7 +113,7 @@ CARD_EXTRACTION = (
     "RULES:\n"
     "1. Only extract what the user EXPLICITLY stated. Do not fill in from memory.\n"
     '2. card_number: digits only, no spaces. "4532 0151 1283 0366" → "4532015112830366".\n'
-    '3. cvv: digits only. "one two three" → "123".\n'
+    '3. cvv: digits only. Convert verbal digits to numerals: "one two three" → "123".\n'
     "4. expiry_month: integer 1-12. \"December\" → 12.\n"
     '5. expiry_year: 4-digit integer. "27" → 2027, "12/27" → month=12, year=2027.\n'
     "6. cardholder_name: as stated by the user.\n"
@@ -145,7 +124,10 @@ CARD_EXTRACTION = (
     '"expiry_year": null, "cardholder_name": null, "user_intent": "providing_card"}}\n\n'
     '"expires December 2027, CVV is one two three, cardholder Nithin Jain"\n'
     '→ {{"card_number": null, "cvv": "123", "expiry_month": 12, '
-    '"expiry_year": 2027, "cardholder_name": "Nithin Jain", "user_intent": "providing_card"}}\n\n'
+    '"expiry_year": 2027, "cardholder_name": "Nithin Jain", "user_intent": "providing_card"}}\n'
+    "// Verbal CVV example (brief's exact phrasing):\n"
+    '"CVV is one two three" → {{"card_number": null, "cvv": "123", "expiry_month": null, '
+    '"expiry_year": null, "cardholder_name": null, "user_intent": "providing_card"}}\n\n'
     '"4532015112830366, expires 12/27, CVV 123, cardholder Nithin Jain"\n'
     '→ {{"card_number": "4532015112830366", "cvv": "123", "expiry_month": 12, '
     '"expiry_year": 2027, "cardholder_name": "Nithin Jain", "user_intent": "providing_card"}}\n\n'

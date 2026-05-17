@@ -159,9 +159,12 @@ def test_happy_path_acc1001(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_
     assert "txn_TEST123" in r6
     assert "500" in r6
 
-    # PII check on all responses
+    # PII check on all responses. r3 is the DOB confirm-back prompt — the
+    # one legitimate place the agent reads the DOB to the customer, so it's
+    # exempt from the leak check (otherwise the customer sees "[REDACTED]"
+    # and can't confirm).
     account = agent._conv.account
-    for m in [r0, r1, r2, r3, r4, r5, r6]:
+    for m in [r0, r1, r2, r4, r5, r6]:
         assert not contains_pii(m, account), f"PII leaked in: {m}"
 
 
@@ -677,13 +680,21 @@ def test_out_of_order_info(mock_ec, mock_ea, mock_ei, mock_eid, mock_pp, mock_la
     number="4532015112830366", cvv="123", month=12, year=2027, cardholder="Nithin Jain"
 ))
 def test_pii_not_in_any_response(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_pp, mock_la):
-    """PII must never appear in any agent message across a full conversation."""
+    """PII must never appear in any agent message across a full conversation,
+    except the legitimate DOB readback in the confirm-back prompt."""
     agent = Agent()
     responses = []
-    for user_msg in ["hi", "ACC1001", "Nithin Jain", "DOB 14 May 1990", "yes", "500",
-                     "4532015112830366, CVV 123, exp 12/2027, cardholder Nithin Jain"]:
+    dob_confirm_turn: int | None = None
+    user_msgs = ["hi", "ACC1001", "Nithin Jain", "DOB 14 May 1990", "yes", "500",
+                 "4532015112830366, CVV 123, exp 12/2027, cardholder Nithin Jain"]
+    for i, user_msg in enumerate(user_msgs):
         r = msg(agent.next(user_msg))
         responses.append(r)
+        # Capture the index where the agent enters DOB confirm-back. The
+        # response that just came out is the legitimate DOB readback, so it
+        # is exempt from the leak check.
+        if dob_confirm_turn is None and agent._conv.awaiting_dob_confirmation:
+            dob_confirm_turn = i
         if agent._conv.state.name.startswith("TERMINAL") or agent._conv.state.name == "CONFIRM_AND_CLOSE":
             break
 
@@ -691,6 +702,8 @@ def test_pii_not_in_any_response(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, 
     assert account is not None
 
     for i, response in enumerate(responses):
+        if i == dob_confirm_turn:
+            continue
         assert not contains_pii(response, account), (
             f"PII leaked in turn {i}: {response}"
         )

@@ -45,12 +45,12 @@ cobrador/
 │   ├── responses.py       # Templated user-facing messages (90% of output)
 │   └── pii_filter.py      # Final output PII redaction layer
 ├── eval/
-│   ├── personas.py        # 10 simulation personas
+│   ├── personas.py        # 12 simulation personas
 │   ├── simulator.py       # LLM-driven user simulator
 │   ├── judge.py           # LLM-as-judge scoring
 │   ├── messy_cases.py     # 21 production-style messy extraction test cases
 │   └── run_eval.py        # Three-tier eval runner CLI
-└── tests/                 # 124 deterministic tests passing + 21 live LLM tests skipped offline
+└── tests/                 # 168 deterministic tests passing + 23 live LLM tests skipped offline
     └── test_extraction_messy.py  # Tier 1.5: live LLM messy extraction tests
 ```
 
@@ -92,28 +92,34 @@ PHOENIX=1 uv run python -m eval.run_eval --tier 3
 | State machine transition allow-list | 13 | ✅ 100% |
 | PII filter — DOB/Aadhaar/pincode variants | 17 | ✅ 100% |
 | API payload/retry behavior | 2 | ✅ 100% |
-| Scripted multi-turn scenarios (all 4 accounts + failure paths) | 24 | ✅ 100% |
-| **Total** | **124** | **✅ 124/124** |
+| Identity-regex deterministic pre-extractor | 40 | ✅ 100% |
+| Scripted multi-turn scenarios (all 4 accounts + failure paths) | 28 | ✅ 100% |
+| **Total** | **168** | **✅ 168/168** |
 
 ### Tier 1.5 — Messy Extraction Accuracy
 
-21 production-style inputs covering verbal numbers, Hinglish, self-correction, honorifics,
-ambiguous dates, full 12-digit Aadhaar, leap-year DOB.
+23 production-style inputs covering brief's exact phrasings (verbal CVV digits,
+spaced pincode, nickname-vs-full-name, leap-year DOB, ambiguous dates, hesitant
+account-ID phrasing).
 
 | Extractor | Cases | Result |
 |-----------|-------|--------|
-| account_id (lowercase, hyphenated, hesitant, Hinglish) | 4/4 | ✅ 100% |
-| name (filler words, Hinglish, self-correction, honorific stripped) | 4/4 | ✅ 100% |
-| dob (verbal, Hinglish, DD-MM-YYYY, ambiguous flagged, leap year) | 5/5 | ✅ 100% |
-| aadhaar (full 12-digit → last 4, verbal digits) | 2/2 | ✅ 100% |
+| account_id (lowercase, hyphenated, hesitant) | 4/4 | ✅ 100% |
+| name (filler words, self-correction, honorific, nickname-vs-full) | 4/4 | ✅ 100% |
+| dob (verbal, DD-MM-YYYY, ambiguous flagged, leap year) | 5/5 | ✅ 100% |
+| aadhaar (full 12-digit → last 4, labeled last-4) | 2/2 | ✅ 100% |
 | amount (words, ₹ symbol, "pay it all") | 3/3 | ✅ 100% |
-| card (spaced number, verbal CVV, verbal expiry) | 3/3 | ✅ 100% |
-| **Total** | **21/21** | **✅ 100%** |
+| card (spaced number, verbal CVV, verbal expiry, compound) | 5/5 | ✅ 100% |
+| **Total** | **23/23** | **✅ 100%** |
 
-### Tier 3 — Persona Simulation (11 personas, LLM-as-judge)
+### Tier 3 — Persona Simulation (12 personas, LLM-as-judge)
 
-Latest recorded live run below was captured before adding the extra `turn1_volunteer`
-persona; rerun `uv run python -m eval.run_eval --tier 3` to refresh these aggregate metrics.
+Personas: `cooperative`, `rambling`, `terse`, `confused`, `adversarial_imposter`,
+`prompt_injector`, `zero_balance` (ACC1003), `invalid_card`, `leap_year` (ACC1004),
+`out_of_order`, `turn1_volunteer`, `name_typo_recovery`.
+
+Rerun `uv run python -m eval.run_eval --tier 3` to refresh aggregate metrics — numbers
+below are from the most recent live run before the latest persona additions.
 
 | Metric | Score | Notes |
 |--------|-------|-------|

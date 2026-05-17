@@ -4,7 +4,6 @@ import os
 import sys
 
 from observability import setup_phoenix
-from agent import Agent
 
 
 def main() -> None:
@@ -12,7 +11,11 @@ def main() -> None:
         print("Error: OPENAI_API_KEY environment variable not set.")
         sys.exit(1)
 
+    # Register OTEL instrumentation BEFORE importing anything that touches
+    # the OpenAI client, so the instrumentor can patch the SDK cleanly.
     setup_phoenix()
+
+    from agent import Agent  # noqa: E402 — must come after setup_phoenix
 
     print("=" * 60)
     print("  Cobrador — Payment Collection Agent")

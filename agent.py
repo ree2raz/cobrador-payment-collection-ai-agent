@@ -74,8 +74,14 @@ class Agent:
                 "Unhandled error in turn (state=%s): %s", self._conv.state, exc
             )
             response = R.TRANSIENT_ERROR
-        # Final PII redaction layer — defense in depth
-        response = redact_pii(response, self._conv.account)
+        # Final PII redaction layer — defense in depth. Allow DOB readback
+        # only while we're prompting the customer to confirm the date we
+        # parsed; otherwise they'd see "[REDACTED]" and can't confirm.
+        response = redact_pii(
+            response,
+            self._conv.account,
+            allow_dob_readback=self._conv.awaiting_dob_confirmation,
+        )
         logger.debug("state=%s response=%r", self._conv.state, response[:80])
         return {"message": response}
 
@@ -139,6 +145,10 @@ class Agent:
             return R.ABORTED
 
         if extraction.account_id is None:
+            # Asking a question shouldn't burn a retry — only an
+            # attempted-but-unparseable account ID should.
+            if extraction.user_intent == "asking_question":
+                return R.ASK_ACCOUNT_ID
             self._conv.account_lookup_retries += 1
             if self._conv.account_lookup_retries >= MAX_ACCOUNT_LOOKUP_RETRIES:
                 self._conv.transition(State.TERMINAL_ACCOUNT_NOT_FOUND, trigger="max_id_retries")
@@ -171,8 +181,11 @@ class Agent:
         try:
             result = lookup_account(self._conv.account_id)
         except ServerError:
+            # Distinct from account-not-found: tenacity already retried 3x,
+            # so the API is genuinely down. Use a different message so the
+            # caller knows it's a technical issue, not a security signal.
             self._conv.transition(State.TERMINAL_ACCOUNT_NOT_FOUND, trigger="lookup_server_error")
-            return R.ACCOUNT_LOOKUP_FAILED
+            return R.LOOKUP_TRANSIENT_ERROR
         except Exception as exc:
             # Defense in depth: any unexpected error (JSON decode, library bug,
             # etc.) is treated like a server error so we never strand the agent
@@ -201,6 +214,15 @@ class Agent:
         # DOB confirmation sub-flow
         if self._conv.awaiting_dob_confirmation:
             return self._handle_dob_confirmation(user_input)
+
+        # Silent/empty turn — re-prompt without burning an LLM call.
+        if not user_input:
+            return self._ask_identity()
+
+        # Compound capture: user may also volunteer payment amount / card
+        # details in the same message. Capture them now so we don't re-ask
+        # after verification.
+        self._opportunistic_payment_details(user_input)
 
         already = {
             "full_name": self._conv.provided_name,
@@ -239,6 +261,13 @@ class Agent:
 
     def _handle_dob_confirmation(self, user_input: str) -> str:
         assert self._conv.pending_dob is not None
+        # Silent/empty turn — just re-prompt confirmation.
+        if not user_input:
+            return R.dob_confirm_prompt(self._conv.pending_dob)
+        # Compound capture: user may say "yes, and my pincode is 400001" or
+        # "yes, I want to pay 400". Pick up volunteered fields alongside the
+        # confirmation answer.
+        self._opportunistic_payment_details(user_input)
         confirmation = extract_dob_confirmation(user_input, self._conv.pending_dob)
 
         if confirmation.user_intent == "wants_to_cancel":
@@ -271,16 +300,15 @@ class Agent:
         if result.verified:
             self._conv.transition(State.SHARE_BALANCE, trigger="verified")
             balance = self._conv.account.balance  # type: ignore[union-attr]
-            response = R.balance_announcement(balance)
             if balance == Decimal("0"):
                 self._conv.transition(State.CONFIRM_AND_CLOSE, trigger="zero_balance")
-            else:
-                if self._conv.payment_amount is not None:
-                    self._conv.transition(State.AWAITING_CARD, trigger="balance_shared_amount_precollected")
-                    response = f"{response} {self._card_prompt_after_amount(precollected_amount=True)}"
-                else:
-                    self._conv.transition(State.AWAITING_AMOUNT, trigger="balance_shared")
-            return response
+                return R.balance_announcement(balance)
+            if self._conv.payment_amount is not None:
+                response = R.balance_announcement_with_amount(balance, self._conv.payment_amount)
+                self._conv.transition(State.AWAITING_CARD, trigger="balance_shared_amount_precollected")
+                return f"{response} {self._card_prompt_after_amount(precollected_amount=False)}"
+            self._conv.transition(State.AWAITING_AMOUNT, trigger="balance_shared")
+            return R.balance_announcement(balance)
 
         # Verification failed
         self._conv.verification_retries += 1
@@ -288,11 +316,11 @@ class Agent:
             self._conv.transition(State.TERMINAL_VERIFICATION_FAILED, trigger="max_verify_retries")
             return R.VERIFICATION_FAILED_TERMINAL
 
-        # Clear all provided identity so user must re-enter
-        self._conv.provided_name = None
-        self._conv.provided_dob = None
-        self._conv.provided_aadhaar4 = None
-        self._conv.provided_pincode = None
+        # Keep the fields the user already provided intact. Wiping everything
+        # would force the user to re-confirm DOB / re-state secondary factor
+        # even when only one field (e.g. name) was the actual mismatch — the
+        # next-turn extractor overwrites whichever field they re-state. The
+        # verification_retries counter still bounds abuse.
         self._conv.pending_dob = None
         self._conv.awaiting_dob_confirmation = False
 
@@ -318,16 +346,19 @@ class Agent:
         """
         hints = extract_identity_hints(user_input)
 
-        # Only call the LLM if regex missed everything AND the message has
-        # identity-related keywords. Avoids wasting an LLM call (and confusing
-        # mock side_effect lists in tests) on a bare account-ID message.
+        # Call the LLM whenever the message has identity-related keywords —
+        # the regex only catches a subset (Title-Case names, labeled patterns).
+        # E.g. "i am nithin jain" (lowercase, after "i am") slips past
+        # _NAME_RE but is trivial for the LLM. We previously short-circuited
+        # the LLM if regex caught *any* field, which silently dropped the
+        # other fields in compound messages.
         name = hints.full_name
         dob = hints.dob
         dob_ambiguous = hints.dob_ambiguous
         aadhaar4 = hints.aadhaar_last4
         pincode = hints.pincode
 
-        if not hints.any_captured() and _IDENTITY_KEYWORDS.search(user_input):
+        if _IDENTITY_KEYWORDS.search(user_input):
             already = {
                 "full_name": self._conv.provided_name,
                 "dob": self._conv.provided_dob,
@@ -340,6 +371,11 @@ class Agent:
                 logger.warning("opportunistic extract_identity failed: %s", exc)
                 extraction = None
             if extraction is not None:
+                # Respect cancel intent if the LLM detected it from the
+                # compound message (e.g. "stop, never mind my name is …").
+                if extraction.user_intent == "wants_to_cancel":
+                    self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
+                    return R.ABORTED
                 name = extraction.full_name or name
                 dob = extraction.dob or dob
                 dob_ambiguous = dob_ambiguous or (extraction.dob_ambiguous and dob is None)
@@ -415,11 +451,14 @@ class Agent:
 
     @staticmethod
     def _looks_like_card_input(user_input: str) -> bool:
+        # Require an explicit card-related keyword. A pure digit-count rule
+        # (e.g. >=13) fires spuriously when identity + amount digits stack up
+        # — DOB (8) + account ID digits + Aadhaar (4) + pincode (6) easily
+        # exceeds 13 with no card present.
         lowered = user_input.lower()
-        if any(token in lowered for token in ("card", "cvv", "expiry", "expires", "exp ")):
-            return True
-        digits = "".join(c for c in user_input if c.isdigit())
-        return len(digits) >= 13
+        return any(
+            token in lowered for token in ("card", "cvv", "expiry", "expires", "exp ")
+        )
 
     @staticmethod
     def _looks_like_amount_input(user_input: str) -> bool:
@@ -452,6 +491,14 @@ class Agent:
         account = self._conv.account
         assert account is not None
         balance = account.balance
+
+        # Silent/empty turn — re-prompt without burning an LLM call.
+        if not user_input:
+            return R.ask_amount(balance)
+
+        # Compound capture: user may say "pay 500 with my card 4532..." —
+        # grab the card details now so we don't re-ask after the amount step.
+        self._opportunistic_payment_details(user_input)
 
         extraction = extract_amount(user_input, balance)
 
@@ -508,6 +555,11 @@ class Agent:
     def _handle_card(self, user_input: str) -> str:
         account = self._conv.account
         assert account is not None
+
+        # Silent/empty turn — re-prompt for whatever's missing without
+        # burning an LLM call.
+        if not user_input:
+            return self._card_prompt_after_amount()
 
         # Build "already collected" context from current card state. Skip
         # fields that were cleared by a prior validation error (stored as

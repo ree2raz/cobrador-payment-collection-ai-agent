@@ -158,4 +158,22 @@ PERSONAS: list[Persona] = [
         goal="Pay ₹400 — having volunteered account/name/DOB in turn 1, the agent should not re-ask",
         expected_outcome="payment_success",
     ),
+    Persona(
+        name="name_typo_recovery",
+        account_id="ACC1002",
+        system_prompt=(
+            "You are a cooperative user but you make a small typo in your name on the first try. "
+            "Your account ID is ACC1002. Give it when asked. "
+            "When asked for identity, say: 'dob is 1985-11-23'. Confirm the DOB when asked. "
+            "When asked for your name, FIRST give the wrong spelling exactly: "
+            "'Rajarajeswari BalaSubranamium'. The agent will say it doesn't match. "
+            "On the next turn, give the correct spelling: 'my name is Rajarajeswari Balasubramaniam'. "
+            "The agent MUST NOT re-ask for your DOB after you correct the name — you already "
+            "confirmed it. If it does, briefly point that out. "
+            "Pay 200 rupees with card 4532015112830366, CVV 456, expiry 06/2028, "
+            "cardholder Rajarajeswari Balasubramaniam."
+        ),
+        goal="Pay ₹200 — agent should retain DOB after a name-correction retry",
+        expected_outcome="payment_success",
+    ),
 ]

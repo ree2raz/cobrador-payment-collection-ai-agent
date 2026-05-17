@@ -51,15 +51,23 @@ def _dob_patterns(dob: date) -> list[str]:
     return patterns
 
 
-def redact_pii(message: str, account: AccountRecord | None) -> str:
+def redact_pii(
+    message: str,
+    account: AccountRecord | None,
+    *,
+    allow_dob_readback: bool = False,
+) -> str:
     if account is None:
         return message
 
     result = message
 
-    # Redact DOB (various formats)
-    for pat in _dob_patterns(account.dob):
-        result = _redact_pattern(result, pat)
+    # Redact DOB (various formats). Skipped when the agent is legitimately
+    # reading the DOB back for confirmation — otherwise the customer sees
+    # "[REDACTED]" and can't confirm anything.
+    if not allow_dob_readback:
+        for pat in _dob_patterns(account.dob):
+            result = _redact_pattern(result, pat)
 
     # Redact Aadhaar last 4 (only if standalone 4-digit sequence matching)
     aadhaar = account.aadhaar_last4

@@ -12,7 +12,7 @@ class AccountIdExtraction(BaseModel):
         None,
         description="Normalized account ID like 'ACC1001'. Null if not stated.",
     )
-    user_intent: Literal["provided_id", "asking_question", "off_topic", "wants_to_cancel"]
+    user_intent: Literal["provided_id", "asking_question", "wants_to_cancel"]
 
 
 class IdentityExtraction(BaseModel):

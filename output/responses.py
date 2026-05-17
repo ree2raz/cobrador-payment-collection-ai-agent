@@ -28,6 +28,16 @@ ACCOUNT_LOOKUP_FAILED = (
     "or we can try again later. Thank you for your patience."
 )
 
+# Used when the lookup endpoint itself is unreachable (5xx / network) after
+# retries — distinct from account-not-found so we can tell the user it's a
+# technical issue, not a security/enumeration outcome. Terminal because
+# tenacity already retried 3x with backoff before raising.
+LOOKUP_TRANSIENT_ERROR = (
+    "I'm having trouble reaching our account system right now — this looks like "
+    "a temporary technical issue on our side. Please try again in a few minutes, "
+    "or call back using the number on your notice. Thank you for your patience."
+)
+
 # ── Identity collection ─────────────────────────────────────────────────────
 
 ASK_NAME = "Thank you. Could you please confirm your full name as it appears on your account?"
@@ -59,15 +69,21 @@ def dob_ambiguous_prompt() -> str:
 # ── Verification outcomes ───────────────────────────────────────────────────
 
 def verification_failed_retry(attempts_left: int) -> str:
+    # We can't tell the user which field was wrong (would expose account data),
+    # so we suggest trying a different secondary factor — a typo in one field
+    # is the most common failure mode for cooperative users.
+    suggestion = (
+        "Please re-check your full name. If you don't recall your date of birth "
+        "exactly, you can try the last 4 digits of your Aadhaar or your pincode instead."
+    )
     if attempts_left == 1:
         return (
             "The details you provided don't match our records. "
-            "This is your last attempt. Please try again with your full name and "
-            "one of: date of birth, Aadhaar last 4, or pincode."
+            f"This is your last attempt. {suggestion}"
         )
     return (
-        f"The details you provided don't match our records. "
-        f"Please try again — you have {attempts_left} attempt(s) remaining."
+        f"The details you provided don't match our records — "
+        f"you have {attempts_left} attempt(s) remaining. {suggestion}"
     )
 
 VERIFICATION_FAILED_TERMINAL = (
@@ -83,12 +99,19 @@ def balance_announcement(balance: Decimal) -> str:
     if balance == 0:
         return (
             f"Your identity has been verified. Your outstanding balance is {formatted}. "
-            "There is nothing to pay at this time. "
-            "Is there anything else I can help you with? Otherwise, have a great day!"
+            "There is nothing to pay at this time. Thank you, and have a great day!"
         )
     return (
         f"Your identity has been verified. Your outstanding balance is {formatted}. "
         "How much would you like to pay today? You can pay the full amount or a partial amount."
+    )
+
+def balance_announcement_with_amount(balance: Decimal, amount: Decimal) -> str:
+    """Used when the user pre-volunteered the payment amount in an earlier
+    turn — no need to ask 'how much' again."""
+    return (
+        f"Your identity has been verified. Your outstanding balance is ₹{balance:,.2f}, "
+        f"and you'd like to pay ₹{amount:,.2f}."
     )
 
 # ── Amount collection ───────────────────────────────────────────────────────
@@ -103,6 +126,12 @@ INVALID_AMOUNT = (
     "I couldn't understand that amount. Please enter a valid amount in rupees, "
     "for example: '500' or '1250.75'."
 )
+
+def ask_amount(balance: Decimal) -> str:
+    return (
+        f"Your outstanding balance is ₹{balance:,.2f}. "
+        "How much would you like to pay today? You can pay the full amount or a partial amount."
+    )
 
 # ── Card collection ─────────────────────────────────────────────────────────
 
@@ -181,9 +210,8 @@ PAYMENT_FAILED_TERMINAL = (
 def payment_success(transaction_id: str, amount: Decimal) -> str:
     return (
         f"Your payment of ₹{amount:,.2f} has been processed successfully. "
-        f"Your transaction ID is {transaction_id}. "
-        "Please keep this for your records. "
-        "Is there anything else I can help you with?"
+        f"Your transaction ID is {transaction_id} — please keep this for your records. "
+        "Thank you, and have a great day!"
     )
 
 # ── Closing ─────────────────────────────────────────────────────────────────
