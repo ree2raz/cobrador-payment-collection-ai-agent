@@ -127,6 +127,11 @@ class Agent:
     # ── Account ID handler ──────────────────────────────────────────────────
 
     def _handle_account_id(self, user_input: str) -> str:
+        # Silent / empty turn — don't waste an LLM call or burn a retry. Just
+        # re-prompt. (A real account ID is at least 4 characters: "ACC" + digit.)
+        if not user_input or len(user_input.strip()) < 3:
+            return R.ASK_ACCOUNT_ID
+
         extraction = extract_account_id(user_input)
 
         if extraction.user_intent == "wants_to_cancel":

@@ -317,6 +317,37 @@ def test_compound_first_turn_regex_fallback(mock_ec, mock_ea, mock_ei, mock_eid,
     assert "confirm" in r.lower() or "14" in r
 
 
+# ── Scenario 7-crash: Three bad inputs no longer crash the FSM ──────────────
+# Regression: AWAITING_ACCOUNT_ID -> TERMINAL_ACCOUNT_NOT_FOUND wasn't in the
+# allow-list. On the third unparseable account-ID message, _handle_account_id
+# called .transition(TERMINAL_ACCOUNT_NOT_FOUND) and InvalidTransitionError
+# propagated out of next(). Now both: the transition is allowed AND empty
+# inputs no longer burn a retry.
+
+@patch("agent.extract_account_id", return_value=mock_account_id(None, intent="off_topic"))
+def test_account_id_retry_exhaustion_clean_terminal(mock_eid):
+    """Three garbage messages → clean TERMINAL_ACCOUNT_NOT_FOUND, no exception."""
+    agent = Agent()
+    agent.next("hi")
+    agent.next("blah blah blah")
+    agent.next("still nothing useful")
+    r = msg(agent.next("more noise"))
+    assert agent._conv.state == State.TERMINAL_ACCOUNT_NOT_FOUND
+    assert "unable" in r.lower() or "contact" in r.lower() or "notice" in r.lower()
+
+
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+def test_empty_inputs_dont_burn_retries(mock_eid):
+    """Repeated empty / whitespace inputs don't increment the retry counter."""
+    agent = Agent()
+    agent.next("hi")
+    for _ in range(5):
+        agent.next("")
+        agent.next("   ")
+    assert agent._conv.account_lookup_retries == 0
+    assert agent._conv.state == State.AWAITING_ACCOUNT_ID
+
+
 # ── Scenario 7-sim: Greeting first, compound on turn 2 (matches simulator) ──
 # The eval simulator always sends "hello" as a seed turn, so the compound
 # "ACC + name + DOB" message arrives in AWAITING_ACCOUNT_ID, not INIT.
