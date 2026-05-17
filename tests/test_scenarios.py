@@ -562,3 +562,94 @@ def test_pii_not_in_any_response(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, 
         assert not contains_pii(response, account), (
             f"PII leaked in turn {i}: {response}"
         )
+
+
+# ── Scenario 14: Transient LLM error doesn't crash the loop ─────────────────
+
+@patch("agent.extract_account_id", side_effect=RuntimeError("OpenAI 503"))
+def test_transient_llm_error_does_not_crash(mock_eid):
+    """A raised exception from an extractor (network blip, schema bug, etc.)
+    must be caught — next() returns a graceful retry message rather than
+    propagating. State and retry counters stay unchanged so the user can
+    just repeat their last message."""
+    agent = Agent()
+    r = msg(agent.next("ACC1001"))
+    # Did not crash, returned a graceful prompt
+    assert "hiccup" in r.lower() or "repeat" in r.lower() or "try" in r.lower()
+    # State unchanged from INIT-after-greeting baseline; retry counter untouched
+    assert agent._conv.account_lookup_retries == 0
+    # User can retry — second attempt should succeed if the extractor recovers
+    with patch("agent.extract_account_id", side_effect=smart_account_id), \
+         patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001")):
+        r2 = msg(agent.next("ACC1001"))
+    assert agent._conv.state == State.AWAITING_IDENTITY
+
+
+# ── Scenario 15: LLM error during identity extraction recovers gracefully ───
+
+@patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+@patch("agent.extract_identity", side_effect=RuntimeError("OpenAI timeout"))
+def test_identity_extraction_error_recovers(mock_ei, mock_eid, mock_la):
+    agent = Agent()
+    agent.next("hi")
+    agent.next("ACC1001")
+    assert agent._conv.state == State.AWAITING_IDENTITY
+    r = msg(agent.next("Nithin Jain, DOB 14 May 1990"))
+    assert "hiccup" in r.lower() or "repeat" in r.lower()
+    # Verification retry counter untouched — this is a tech failure, not a
+    # user-provided-wrong-info failure
+    assert agent._conv.verification_retries == 0
+    assert agent._conv.state == State.AWAITING_IDENTITY
+
+
+# ── Scenario 16: Lookup API unexpected exception → graceful terminal ────────
+
+@patch("agent.lookup_account", side_effect=ValueError("malformed JSON"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+def test_lookup_unexpected_exception(mock_eid, mock_la):
+    """If lookup_account raises something other than ServerError (e.g. a
+    JSON decode bug), we still cleanly terminate instead of stranding the
+    agent in LOOKING_UP_ACCOUNT."""
+    agent = Agent()
+    agent.next("hi")
+    r = msg(agent.next("ACC1001"))
+    assert agent._conv.state == State.TERMINAL_ACCOUNT_NOT_FOUND
+    assert "unable" in r.lower() or "contact" in r.lower() or "notice" in r.lower()
+
+
+# ── Scenario 17: Payment API unexpected exception → retryable server_error ──
+
+@patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("agent.process_payment", side_effect=ValueError("bad json"))
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+@patch("agent.extract_identity", side_effect=[
+    mock_identity(name="Nithin Jain"),
+    mock_identity(dob=date(1990, 5, 14)),
+])
+@patch("agent.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
+@patch("agent.extract_amount", return_value=mock_amount(Decimal("500.00")))
+@patch("agent.extract_card", return_value=mock_card(
+    number="4532015112830366", cvv="123", month=12, year=2027, cardholder="Nithin Jain"
+))
+def test_payment_unexpected_exception(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_pp, mock_la):
+    """A library-level bug in process_payment routes through the existing
+    retry path rather than crashing the loop."""
+    agent = Agent()
+    agent.next("hi"); agent.next("ACC1001"); agent.next("Nithin Jain")
+    agent.next("DOB 14 May 1990"); agent.next("yes"); agent.next("500")
+    r = msg(agent.next("full card"))
+    # Treated as retryable server_error — back to AWAITING_CARD, retry incremented
+    assert agent._conv.state == State.AWAITING_CARD
+    assert agent._conv.payment_retries == 1
+
+
+# ── Scenario 18: Missing OPENAI_API_KEY raises a clear error, not KeyError ──
+
+def test_missing_api_key_clear_error(monkeypatch):
+    import importlib
+    import llm.client as client_module
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(client_module, "_client", None)
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        client_module.get_client()

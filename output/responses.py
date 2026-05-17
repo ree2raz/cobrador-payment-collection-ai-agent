@@ -200,3 +200,11 @@ ABORTED = (
 # ── Fallback ────────────────────────────────────────────────────────────────
 
 FALLBACK = "I didn't quite catch that. Could you please repeat?"
+
+# Returned when an LLM / network call raises unexpectedly mid-turn. State is
+# unchanged so the user can simply retry their last message — a transient
+# upstream blip should not kill the agent loop or burn a retry counter.
+TRANSIENT_ERROR = (
+    "Sorry, I had a brief technical hiccup processing that. "
+    "Could you please repeat your last message?"
+)

@@ -34,7 +34,7 @@ from llm.extractors import (
 )
 from output import responses as R
 from output.pii_filter import redact_pii
-from tools.payment_api import ServerError, lookup_account, process_payment
+from tools.payment_api import PaymentResult, ServerError, lookup_account, process_payment
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +51,21 @@ class Agent:
         self._conv = ConversationState()
 
     def next(self, user_input: str) -> dict:
-        """Process one turn. Returns {"message": str}."""
+        """Process one turn. Returns {"message": str}.
+
+        Wraps _process in an exception boundary: any unhandled exception
+        (transient OpenAI error, network blip, schema-parse failure, etc.)
+        is caught, logged, and rendered as a generic retry message. FSM
+        state is left untouched so the user can simply repeat their last
+        input on the next turn without burning any retry counter."""
         user_input = user_input.strip()
-        response = self._process(user_input)
+        try:
+            response = self._process(user_input)
+        except Exception as exc:
+            logger.exception(
+                "Unhandled error in turn (state=%s): %s", self._conv.state, exc
+            )
+            response = R.TRANSIENT_ERROR
         # Final PII redaction layer — defense in depth
         response = redact_pii(response, self._conv.account)
         logger.debug("state=%s response=%r", self._conv.state, response[:80])
@@ -138,6 +150,14 @@ class Agent:
             result = lookup_account(self._conv.account_id)
         except ServerError:
             self._conv.transition(State.TERMINAL_ACCOUNT_NOT_FOUND, trigger="lookup_server_error")
+            return R.ACCOUNT_LOOKUP_FAILED
+        except Exception as exc:
+            # Defense in depth: any unexpected error (JSON decode, library bug,
+            # etc.) is treated like a server error so we never strand the agent
+            # in LOOKING_UP_ACCOUNT. The generic terminal message does not
+            # reveal whether the failure was technical or account-not-found.
+            logger.exception("lookup_account unexpected error: %s", exc)
+            self._conv.transition(State.TERMINAL_ACCOUNT_NOT_FOUND, trigger="lookup_unexpected_error")
             return R.ACCOUNT_LOOKUP_FAILED
 
         if not result.success:
@@ -477,7 +497,15 @@ class Agent:
         assert conv.payment_amount is not None
 
         self._conv.transition(State.PROCESSING_PAYMENT, trigger="card_valid")
-        result = process_payment(conv.account.account_id, conv.payment_amount, conv.card)
+        try:
+            result = process_payment(conv.account.account_id, conv.payment_amount, conv.card)
+        except Exception as exc:
+            # Defense in depth: process_payment already converts httpx errors
+            # to server_error, but a library/JSON bug shouldn't crash the loop
+            # or strand us in PROCESSING_PAYMENT. Treat as a retryable
+            # server_error so the existing retry path runs.
+            logger.exception("process_payment unexpected error: %s", exc)
+            result = PaymentResult(success=False, error_code="server_error")
 
         # Drop card from memory immediately after API call
         conv.clear_card()
