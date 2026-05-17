@@ -59,6 +59,7 @@ User Input
 | Lookup failure message | Generic ("unable to locate") | Prevents account enumeration by external actors |
 | Response generation | Templated (not LLM) | Deterministic, testable, and PII-safe by construction |
 | PII defense | Three-layer | Extraction prompt rules + state never stores full Aadhaar + output filter redaction |
+| Early volunteered payment details | Store, do not process | If a user front-loads amount/card details, Cobrador stores them but still verifies identity and announces balance before any payment transition |
 
 ---
 
@@ -78,18 +79,19 @@ User Input
 
 ## Assumptions
 
-1. The external payment API is authoritative — Cobrador does not independently validate card BINs beyond Luhn.
+1. The external payment API is authoritative — Cobrador validates card length/checksum, CVV length, expiry, and amount before calling it, but does not independently validate BIN ranges.
 2. "Full name" means the name string stored in the account record; the agent performs Unicode-NFC normalization before comparison but does not tokenize or fuzzy-match.
 3. A single conversation handles one payment transaction; multi-payment batching is out of scope.
 4. The agent operates in English; Hinglish or regional-language input will be partially handled by the LLM extractor but is not guaranteed.
-5. Leap-year DOBs (e.g., 1988-02-29) are valid and must be parsed correctly — covered by `python-dateutil`.
+5. Leap-year DOBs (e.g., 1988-02-29) are valid and must be parsed correctly — covered by Python `datetime` validation and extractor tests.
+6. Payment retries in this sandbox are safe enough to retry on 5xx/network failures. In production, automatic payment retries must include an idempotency key from the upstream processor to avoid duplicate charges.
 
 ---
 
 ## What I'd Improve With More Time
 
 1. **Compliance policy file** — FDCPA/RBI rules as declarative YAML consumed by a guardrails layer, so policy changes don't require code edits.
-2. **Telemetry & observability** — Structured logs (already using `structlog`) piped to a PIE-style analytics dashboard; per-state latency and extraction confidence tracking.
+2. **Telemetry & observability** — Structured JSON logs and traces piped to a PIE-style analytics dashboard; per-state latency and extraction confidence tracking.
 3. **Multi-language extraction** — Hinglish and regional-language support in extraction prompts; detected in persona simulation tests.
 4. **Conversation resumption** — Redis-backed session store keyed on caller ID; same FSM state, durable across disconnects.
 5. **Voice front-end** — The FSM core is transport-agnostic; plugging in a Twilio/Deepgram front-end reuses agent.py unchanged (same pattern as the dental-desk-voice-agent reference).

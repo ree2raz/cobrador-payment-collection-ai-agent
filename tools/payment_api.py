@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from json import JSONDecodeError
 from typing import Optional
 
 import httpx
@@ -60,15 +61,19 @@ def lookup_account(account_id: str) -> LookupResult:
         raise ServerError("network_error") from e
 
     if resp.status_code == 200:
-        data = resp.json()
-        account = AccountRecord(
-            account_id=data["account_id"],
-            full_name=data["full_name"],
-            dob=date.fromisoformat(data["dob"]),
-            aadhaar_last4=data["aadhaar_last4"],
-            pincode=data["pincode"],
-            balance=Decimal(str(data["balance"])),
-        )
+        try:
+            data = resp.json()
+            account = AccountRecord(
+                account_id=data["account_id"],
+                full_name=data["full_name"],
+                dob=date.fromisoformat(data["dob"]),
+                aadhaar_last4=data["aadhaar_last4"],
+                pincode=data["pincode"],
+                balance=Decimal(str(data["balance"])),
+            )
+        except (JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            logger.warning("lookup_account malformed response account_id=%s", account_id)
+            raise ServerError("malformed_response") from e
         logger.info("lookup_account success account_id=%s", account_id)
         return LookupResult(success=True, account=account)
 
@@ -101,24 +106,42 @@ def process_payment(
         },
     }
 
+    return _process_payment_request(account_id, payload)
+
+
+@retry(
+    retry=retry_if_exception_type(ServerError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    reraise=True,
+)
+def _process_payment_request(account_id: str, payload: dict) -> PaymentResult:
     try:
         with _make_client() as client:
             resp = client.post(f"{BASE_URL}/api/process-payment", json=payload)
     except (httpx.TimeoutException, httpx.RequestError) as e:
         logger.warning("process_payment network error account_id=%s: %s", account_id, e)
-        return PaymentResult(success=False, error_code="server_error")
+        raise ServerError("network_error") from e
 
     if resp.status_code == 200:
-        data = resp.json()
+        try:
+            data = resp.json()
+        except JSONDecodeError as e:
+            logger.warning("process_payment malformed success account_id=%s", account_id)
+            raise ServerError("malformed_response") from e
         txn_id = data.get("transaction_id")
         logger.info("process_payment success account_id=%s txn=%s", account_id, txn_id)
         return PaymentResult(success=True, transaction_id=txn_id)
 
     if resp.status_code == 422:
-        data = resp.json()
+        try:
+            data = resp.json()
+        except JSONDecodeError as e:
+            logger.warning("process_payment malformed 422 account_id=%s", account_id)
+            raise ServerError("malformed_response") from e
         error_code = data.get("error_code", "unknown_error")
         logger.info("process_payment failure account_id=%s error=%s", account_id, error_code)
         return PaymentResult(success=False, error_code=error_code)
 
     logger.warning("process_payment unexpected status=%d account_id=%s", resp.status_code, account_id)
-    return PaymentResult(success=False, error_code="server_error")
+    raise ServerError(f"HTTP {resp.status_code}")

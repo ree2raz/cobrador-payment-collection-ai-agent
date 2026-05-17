@@ -292,6 +292,46 @@ def test_user_volunteers_everything_turn1(mock_edc, mock_ei, mock_eid, mock_la):
     assert agent._conv.state == State.AWAITING_AMOUNT
 
 
+# ── Scenario 7a: User volunteers amount + card before verification ───────────
+
+@patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("agent.process_payment", return_value=mock_payment_success())
+@patch("agent.extract_account_id", side_effect=smart_account_id)
+@patch("agent.extract_identity", return_value=mock_identity(
+    name="Nithin Jain", dob=date(1990, 5, 14)
+))
+@patch("agent.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
+@patch("agent.extract_amount", return_value=mock_amount(Decimal("400.00")))
+@patch("agent.extract_card", side_effect=[
+    mock_card(number="4532015112830366", cvv="123", month=12, year=2027, cardholder="Nithin Jain"),
+    mock_card(),  # user later confirms; stored card details should carry over
+])
+def test_turn1_amount_and_card_preserved_until_after_balance(
+    mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_pp, mock_la
+):
+    agent = Agent()
+    r1 = msg(agent.next(
+        "Hi, my account is ACC1001, name Nithin Jain, DOB 14th May 1990, "
+        "I want to pay 400 rupees on card 4532015112830366 exp 12/2027 cvv 123 cardholder Nithin Jain"
+    ))
+    assert agent._conv.payment_amount == Decimal("400.00")
+    assert agent._conv.card is not None
+    assert agent._conv.card.card_number == "4532015112830366"
+    assert agent._conv.state == State.AWAITING_IDENTITY
+    assert "confirm" in r1.lower()
+
+    r2 = msg(agent.next("yes"))
+    assert agent._conv.state == State.AWAITING_CARD
+    assert "outstanding balance" in r2.lower()
+    assert "400.00" in r2
+    assert "card details" in r2.lower()
+
+    r3 = msg(agent.next("yes, use those card details"))
+    assert agent._conv.state == State.CONFIRM_AND_CLOSE
+    assert "txn_TEST123" in r3
+    assert "400.00" in r3
+
+
 # ── Scenario 7b: Account ID alone on turn 1, no greeting wasted ─────────────
 
 @patch("agent.lookup_account", return_value=mock_lookup_success("ACC1001"))

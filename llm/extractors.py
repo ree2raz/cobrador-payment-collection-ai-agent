@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from datetime import date
 from decimal import Decimal
-from typing import Optional
 
 from llm.client import FAST_MODEL, PRIMARY_MODEL, extract_structured
 from llm.prompts import (

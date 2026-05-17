@@ -259,7 +259,7 @@ Agent : Thank you for your time. Have a great day! Goodbye.
 
 ## 8. Edge Case — Leap Year Date of Birth (ACC1004)
 
-Demonstrates: 29th February 1988 accepted as a valid DOB; `python-dateutil` handles the
+Demonstrates: 29th February 1988 accepted as a valid DOB; Python `datetime` validation handles the
 leap-year edge case correctly.
 
 ```

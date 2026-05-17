@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -34,6 +33,10 @@ TERMINAL_STATES = {
     State.CONFIRM_AND_CLOSE,
 }
 
+
+class InvalidTransitionError(RuntimeError):
+    """Raised when code attempts a transition outside the FSM allow-list."""
+
 ALLOWED_TRANSITIONS: dict[State, set[State]] = {
     State.INIT: {State.AWAITING_ACCOUNT_ID},
     State.AWAITING_ACCOUNT_ID: {State.LOOKING_UP_ACCOUNT, State.AWAITING_ACCOUNT_ID, State.USER_ABORTED},
@@ -48,7 +51,7 @@ ALLOWED_TRANSITIONS: dict[State, set[State]] = {
         State.AWAITING_IDENTITY,
         State.TERMINAL_VERIFICATION_FAILED,
     },
-    State.SHARE_BALANCE: {State.AWAITING_AMOUNT, State.CONFIRM_AND_CLOSE},
+    State.SHARE_BALANCE: {State.AWAITING_AMOUNT, State.AWAITING_CARD, State.CONFIRM_AND_CLOSE},
     State.AWAITING_AMOUNT: {State.AWAITING_CARD, State.AWAITING_AMOUNT, State.USER_ABORTED},
     State.AWAITING_CARD: {
         State.PROCESSING_PAYMENT,
@@ -130,9 +133,10 @@ class ConversationState:
     transition_log: list[TransitionEvent] = field(default_factory=list)
 
     def transition(self, new_state: State, trigger: str = "", response: str = "") -> None:
-        assert new_state in ALLOWED_TRANSITIONS[self.state], (
-            f"Invalid transition {self.state} → {new_state}"
-        )
+        if new_state not in ALLOWED_TRANSITIONS[self.state]:
+            raise InvalidTransitionError(
+                f"Invalid transition {self.state} -> {new_state}"
+            )
         self.transition_log.append(
             TransitionEvent(self.state, new_state, trigger, response)
         )

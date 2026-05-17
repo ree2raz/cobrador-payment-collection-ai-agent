@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Any, Type, TypeVar
+from typing import Type, TypeVar
 
 from openai import OpenAI
 from pydantic import BaseModel

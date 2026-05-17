@@ -1,5 +1,4 @@
-def main():
-    print("Hello! I am an AI that collect payments")
+from cli import main
 
 
 if __name__ == "__main__":

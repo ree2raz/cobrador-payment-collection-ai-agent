@@ -4,7 +4,6 @@ Payment Collection Agent — Cobrador
 Architecture: Deterministic FSM owns all flow control. LLM is used only for
 structured extraction of messy natural language into typed fields. Templated
 responses are used for 90% of agent output (deterministic, testable, PII-safe).
-LLM response generation is reserved for dynamic content (balance, confirmation).
 """
 from __future__ import annotations
 
@@ -14,6 +13,7 @@ from decimal import Decimal
 from core.state_machine import (
     CardDetails,
     ConversationState,
+    InvalidTransitionError,
     State,
     TERMINAL_STATES,
 )
@@ -51,14 +51,16 @@ class Agent:
     def next(self, user_input: str) -> dict:
         """Process one turn. Returns {"message": str}.
 
-        Wraps _process in an exception boundary: any unhandled exception
-        (transient OpenAI error, network blip, schema-parse failure, etc.)
-        is caught, logged, and rendered as a generic retry message. FSM
-        state is left untouched so the user can simply repeat their last
-        input on the next turn without burning any retry counter."""
+        Wraps _process in an exception boundary: upstream/transient exceptions
+        (OpenAI error, network blip, schema-parse failure, etc.) are logged and
+        rendered as a generic retry message. Internal FSM invariant failures are
+        re-raised so tests and operators see real code bugs."""
         user_input = user_input.strip()
         try:
             response = self._process(user_input)
+        except (InvalidTransitionError, AssertionError):
+            logger.exception("Internal state invariant failed (state=%s)", self._conv.state)
+            raise
         except Exception as exc:
             logger.exception(
                 "Unhandled error in turn (state=%s): %s", self._conv.state, exc
@@ -99,6 +101,7 @@ class Agent:
             # If lookup succeeded, opportunistically harvest identity fields
             # from the same opening message before falling back to ASK_IDENTITY.
             if self._conv.state == State.AWAITING_IDENTITY:
+                self._opportunistic_payment_details(user_input)
                 opportunistic = self._opportunistic_identity(user_input)
                 if opportunistic is not None:
                     return opportunistic
@@ -251,7 +254,11 @@ class Agent:
             if balance == Decimal("0"):
                 self._conv.transition(State.CONFIRM_AND_CLOSE, trigger="zero_balance")
             else:
-                self._conv.transition(State.AWAITING_AMOUNT, trigger="balance_shared")
+                if self._conv.payment_amount is not None:
+                    self._conv.transition(State.AWAITING_CARD, trigger="balance_shared_amount_precollected")
+                    response = f"{response} {self._card_prompt_after_amount(precollected_amount=True)}"
+                else:
+                    self._conv.transition(State.AWAITING_AMOUNT, trigger="balance_shared")
             return response
 
         # Verification failed
@@ -314,6 +321,66 @@ class Agent:
             return self._do_verification()
         return self._ask_identity()
 
+    def _opportunistic_payment_details(self, user_input: str) -> None:
+        """Capture volunteered payment details without advancing payment flow.
+
+        This preserves context from users who front-load "pay 500 on this card"
+        while still enforcing the mandatory order: lookup -> verification ->
+        balance announcement -> payment.
+        """
+        account = self._conv.account
+        if account is None:
+            return
+
+        if self._looks_like_amount_input(user_input):
+            amount_extraction = extract_amount(user_input, account.balance)
+            if amount_extraction.user_intent != "wants_to_cancel":
+                if amount_extraction.wants_full_balance:
+                    amount = account.balance
+                else:
+                    amount = amount_extraction.amount
+                if amount is not None and validate_amount(amount, account.balance) is None:
+                    self._conv.payment_amount = amount
+
+        if not self._looks_like_card_input(user_input):
+            return
+        card_extraction = extract_card(user_input, {})
+        if card_extraction.user_intent == "wants_to_cancel":
+            return
+        if not any(
+            (
+                card_extraction.card_number,
+                card_extraction.cvv,
+                card_extraction.expiry_month,
+                card_extraction.expiry_year,
+                card_extraction.cardholder_name,
+            )
+        ):
+            return
+        self._conv.card = CardDetails(
+            card_number=card_extraction.card_number or "",
+            cvv=card_extraction.cvv or "",
+            expiry_month=card_extraction.expiry_month or 0,
+            expiry_year=card_extraction.expiry_year or 0,
+            cardholder_name=card_extraction.cardholder_name or "",
+        )
+
+    @staticmethod
+    def _looks_like_card_input(user_input: str) -> bool:
+        lowered = user_input.lower()
+        if any(token in lowered for token in ("card", "cvv", "expiry", "expires", "exp ")):
+            return True
+        digits = "".join(c for c in user_input if c.isdigit())
+        return len(digits) >= 13
+
+    @staticmethod
+    def _looks_like_amount_input(user_input: str) -> bool:
+        lowered = user_input.lower()
+        return any(
+            token in lowered
+            for token in ("pay", "rupee", "₹", "rs", "amount", "full balance", "clear it", "pay it all")
+        )
+
     def _ask_identity(self) -> str:
         has_name = self._conv.provided_name is not None
         has_secondary = (
@@ -360,7 +427,33 @@ class Agent:
 
         self._conv.payment_amount = amount
         self._conv.transition(State.AWAITING_CARD, trigger="amount_set")
-        return R.ASK_ALL_CARD
+        return self._card_prompt_after_amount()
+
+    def _card_prompt_after_amount(self, precollected_amount: bool = False) -> str:
+        prefix = (
+            f"I have the payment amount as ₹{self._conv.payment_amount:,.2f}. "
+            if precollected_amount and self._conv.payment_amount is not None
+            else ""
+        )
+        card = self._conv.card
+        if card is None:
+            return prefix + R.ASK_ALL_CARD
+        missing = []
+        if not card.card_number:
+            missing.append("card_number")
+        if not card.cvv:
+            missing.append("cvv")
+        if not card.expiry_month or not card.expiry_year:
+            missing.append("expiry")
+        if not card.cardholder_name:
+            missing.append("cardholder_name")
+        if missing:
+            return prefix + R.ask_card(missing)
+        return (
+            prefix
+            + "I also have the card details you already provided. "
+            "Please confirm I should use those details, or re-enter them if anything has changed."
+        )
 
     # ── Card handler ────────────────────────────────────────────────────────
 
