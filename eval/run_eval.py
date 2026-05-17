@@ -17,7 +17,7 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from eval.judge import judge_conversation
@@ -109,10 +109,10 @@ def run_tier3() -> dict:
     else:
         metrics = {}
 
-    output = {"timestamp": datetime.utcnow().isoformat(), "metrics": metrics, "rows": summary_rows}
+    output = {"timestamp": datetime.now(timezone.utc).isoformat(), "metrics": metrics, "rows": summary_rows}
 
     RESULTS_DIR.mkdir(exist_ok=True)
-    out_path = RESULTS_DIR / f"tier3_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+    out_path = RESULTS_DIR / f"tier3_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
     out_path.write_text(json.dumps(output, indent=2))
     print(f"\nResults saved to {out_path}")
 
