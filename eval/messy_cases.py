@@ -43,6 +43,9 @@ MESSY_CASES: list[MessyCase] = [
               "my name is Rahul, wait no, Nithin Jain actually", "full_name", "Nithin Jain"),
     MessyCase("name", "honorific stripped",
               "Mr. Nithin Jain here", "full_name", "Nithin Jain"),
+    MessyCase("name", "compound first turn",
+              "Hi, my account is ACC1001, name Nithin Jain, DOB 14th May 1990, I want to pay 400 rupees",
+              "full_name", "Nithin Jain"),
 
     # ── DOB ─────────────────────────────────────────────────────────────────────
     MessyCase("dob", "verbal date",
@@ -55,6 +58,9 @@ MESSY_CASES: list[MessyCase] = [
               "01-02-1990", "dob_ambiguous", True),
     MessyCase("dob", "leap year verbal",
               "29th february 1988", "dob", date(1988, 2, 29)),
+    MessyCase("dob", "compound first turn",
+              "Hi, my account is ACC1001, name Nithin Jain, DOB 14th May 1990, I want to pay 400 rupees",
+              "dob", date(1990, 5, 14)),
 
     # ── Aadhaar ──────────────────────────────────────────────────────────────────
     MessyCase("aadhaar", "full 12-digit",

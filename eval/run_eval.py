@@ -215,7 +215,8 @@ def run_tier3(persona_filter: list[str] | None = None) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run evaluation tiers")
-    parser.add_argument("--tier", choices=["1", "2", "3", "all"], default="all")
+    # No default — if neither --tier nor --messy is given we'll run all of them.
+    parser.add_argument("--tier", choices=["1", "2", "3", "all"], default=None)
     parser.add_argument(
         "--personas",
         nargs="+",
@@ -229,6 +230,10 @@ def main() -> None:
         help="Run messy extraction accuracy tests (21 production-style inputs).",
     )
     args = parser.parse_args()
+
+    # If neither --tier nor --messy was given, default to running everything.
+    if args.tier is None and not args.messy:
+        args.tier = "all"
 
     # Tier 1 and 2 are pure pytest — no live LLM, no key required. Only gate
     # the key check on tiers/modes that actually hit OpenAI.
