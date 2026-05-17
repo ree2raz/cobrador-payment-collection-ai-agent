@@ -7,3 +7,4 @@ __pycache__/
 eval/results/
 .pytest_cache/
 *_CONTEXT.md
+.coverage
