@@ -10,8 +10,8 @@
 
 ```bash
 # Clone and install
-git clone <repo>
-cd prodigal-agent-engineer--payment-voice-agent
+git clone https://github.com/ree2raz/cobrador-payment-collection-ai-agent
+cd cobrador-payment-collection-ai-agent
 uv sync
 
 # Set your OpenAI API key
@@ -35,21 +35,23 @@ cobrador/
 │   ├── validators.py      # Luhn, date, amount, CVV validators
 │   └── normalization.py   # Unicode-NFC, whitespace collapse
 ├── llm/
-│   ├── client.py          # OpenAI client wrapper
+│   ├── client.py          # OpenAI client wrapper (gpt-5.4 / gpt-5.4-mini)
 │   ├── schemas.py         # Pydantic v2 structured output models
 │   ├── extractors.py      # Per-state extractor functions
 │   └── prompts.py         # Extraction prompt templates (few-shot)
 ├── tools/
 │   └── payment_api.py     # httpx + tenacity retry for lookup & payment
 ├── output/
-│   ├── responses.py       # Templated user-facing messages
+│   ├── responses.py       # Templated user-facing messages (90% of output)
 │   └── pii_filter.py      # Final output PII redaction layer
 ├── eval/
 │   ├── personas.py        # 10 simulation personas
 │   ├── simulator.py       # LLM-driven user simulator
 │   ├── judge.py           # LLM-as-judge scoring
+│   ├── messy_cases.py     # 21 production-style messy extraction test cases
 │   └── run_eval.py        # Three-tier eval runner CLI
-└── tests/                 # 104 tests (100% passing)
+└── tests/                 # 104 tests (Tier 1 + Tier 2, 100% passing)
+    └── test_extraction_messy.py  # Tier 1.5: live LLM messy extraction tests
 ```
 
 ---
@@ -57,35 +59,73 @@ cobrador/
 ## Running Evaluations
 
 ```bash
-# Tier 1 + Tier 2: unit and scripted scenario tests
+# Tier 1 + 2: unit and scripted scenario tests (no API key needed)
 uv run pytest tests/ -v
 
-# With coverage report
-uv run pytest tests/ --cov=. --cov-report=term-missing
+# Tier 3: persona simulation with LLM-as-judge
+uv run python -m eval.run_eval --tier 3
 
-# Tier 3: persona simulation (requires OPENAI_API_KEY)
-uv run python eval/run_eval.py --tier 3
+# Tier 3 — run specific personas only
+uv run python -m eval.run_eval --tier 3 --personas cooperative rambling adversarial_imposter
 
-# Full eval pipeline
-uv run python eval/run_eval.py --tier all
+# Messy extraction accuracy (21 production-style inputs)
+uv run python -m eval.run_eval --messy
+
+# Full pipeline
+uv run python -m eval.run_eval --tier all --messy
+
+# With Phoenix observability
+PHOENIX=1 uv run python -m eval.run_eval --tier 3
 ```
 
 ---
 
-## Eval Metrics
+## Eval Results
 
-| Tier | Scope | Metric | Target |
-|------|-------|--------|--------|
-| 1 | Unit | Validator correctness | 100% |
-| 1 | Unit | Verification truth table (16+ cases) | 100% |
-| 1 | Unit | PII filter — no leakage | 100% |
-| 1 | Unit | State machine transitions | 100% |
-| 2 | Scripted scenarios | All multi-turn flows pass | 104/104 |
-| 2 | Scripted scenarios | LLM mock extraction accuracy | 100% |
-| 3 | Persona simulation | Task completion (cooperative) | ≥95% |
-| 3 | Persona simulation | Verification refusal (adversarial_imposter) | 100% |
-| 3 | Persona simulation | Prompt injection blocked | 100% |
-| 3 | Persona simulation | LLM-as-judge score (avg across personas) | ≥4.0/5.0 |
+### Tier 1 + 2 — Unit & Scripted Tests
+
+| Suite | Tests | Result |
+|-------|-------|--------|
+| Validator correctness (Luhn, date, CVV, amount) | 24 | ✅ 100% |
+| Verification truth table (16-row name × DOB × Aadhaar × pincode) | 16 | ✅ 100% |
+| State machine transition allow-list | 8 | ✅ 100% |
+| PII filter — no leakage under any input | 12 | ✅ 100% |
+| Scripted multi-turn scenarios (all 4 accounts + all failure paths) | 44 | ✅ 100% |
+| **Total** | **104** | **✅ 104/104** |
+
+### Tier 1.5 — Messy Extraction Accuracy
+
+21 production-style inputs covering verbal numbers, Hinglish, self-correction, honorifics,
+ambiguous dates, full 12-digit Aadhaar, leap-year DOB.
+
+| Extractor | Cases | Result |
+|-----------|-------|--------|
+| account_id (lowercase, hyphenated, hesitant, Hinglish) | 4/4 | ✅ 100% |
+| name (filler words, Hinglish, self-correction, honorific stripped) | 4/4 | ✅ 100% |
+| dob (verbal, Hinglish, DD-MM-YYYY, ambiguous flagged, leap year) | 5/5 | ✅ 100% |
+| aadhaar (full 12-digit → last 4, verbal digits) | 2/2 | ✅ 100% |
+| amount (words, ₹ symbol, "pay it all") | 3/3 | ✅ 100% |
+| card (spaced number, verbal CVV, verbal expiry) | 3/3 | ✅ 100% |
+| **Total** | **21/21** | **✅ 100%** |
+
+### Tier 3 — Persona Simulation (10 personas, LLM-as-judge)
+
+| Metric | Score | Notes |
+|--------|-------|-------|
+| Task completion | **4.2 / 5.0** | 7/10 perfect; 2 adversarial personas correctly fail |
+| Security (PII protection) | **5.0 / 5.0** | 0 stored account secrets leaked across all turns |
+| Politeness | **5.0 / 5.0** | — |
+| Clarity | **4.5 / 5.0** | — |
+| PII leak rate | **0%** | Verified across 47 turns |
+| Completion rate | **100%** | All 10 conversations reached a terminal state |
+| Mean turns to completion | **4.7** | — |
+| Adversarial imposter rejected | **100%** | Reaches `TERMINAL_VERIFICATION_FAILED` |
+| Prompt injection blocked | **100%** | No stored account data disclosed |
+
+> The 4.2 mean task completion is pulled down by the `prompt_injector` (task=1, correct —
+> the agent should not help an injector) and `confused` persona (task=2, the simulator
+> declined to share card details in a text chat, an inherent limitation of text-based
+> card collection documented in DESIGN.md).
 
 ---
 
@@ -93,145 +133,48 @@ uv run python eval/run_eval.py --tier all
 
 | Account ID | Name | DOB | Aadhaar Last 4 | Pincode | Balance |
 |------------|------|-----|----------------|---------|---------|
-| ACC1001 | Nithin Jain | 1990-05-14 | 4321 | 400001 | ₹1250.75 |
+| ACC1001 | Nithin Jain | 1990-05-14 | 4321 | 400001 | ₹1,250.75 |
 | ACC1002 | Rajarajeswari Balasubramaniam | 1985-11-23 | 9876 | 400002 | ₹540.00 |
 | ACC1003 | Priya Agarwal | 1992-08-10 | 2468 | 400003 | ₹0.00 |
-| ACC1004 | Rahul Mehta | 1988-02-29 | 1357 | 400004 | ₹3200.50 |
+| ACC1004 | Rahul Mehta | 1988-02-29 | 1357 | 400004 | ₹3,200.50 |
 
 ---
 
 ## Sample Conversations
 
-### 1. Happy Path
+See [CONVERSATIONS.md](./CONVERSATIONS.md) for 9 annotated conversations:
 
-```
-Agent : Hello! I'm calling from Prodigal Finance regarding an outstanding loan account.
-        Could you please share your account ID?
-
-User  : ACC1001
-
-Agent : Thank you. To verify your identity, could I please have your full name as
-        registered on the account?
-
-User  : Nithin Jain
-
-Agent : Thank you, Nithin. Could you also confirm your date of birth?
-
-User  : 14th May 1990
-
-Agent : Is 14th May 1990 correct?
-
-User  : Yes
-
-Agent : Identity verified. Your current outstanding balance is ₹1,250.75.
-        How much would you like to pay today?
-
-User  : I'll pay the full amount.
-
-Agent : Got it — ₹1,250.75. Please share your card number.
-
-User  : 4111111111111111
-
-Agent : And the expiry date?
-
-User  : 12/26
-
-Agent : And the CVV?
-
-User  : 123
-
-Agent : Lastly, the name on the card?
-
-User  : Nithin Jain
-
-Agent : Processing your payment of ₹1,250.75...
-        Payment successful! Transaction ID: TXN-XXXXXX.
-        Thank you, Nithin. Have a great day!
-```
+1. Cooperative user — DOB verification, partial payment (ACC1001)
+2. Rambling user — Aadhaar verification, full balance (ACC1002)
+3. Out-of-order — name + DOB volunteered together (ACC1001)
+4. Verification failure — wrong details, 3 retries exhausted
+5. Verification failure — adversarial imposter
+6. Payment failure — invalid card, retry succeeds
+7. Payment failure — expired card, re-entered
+8. Edge case — leap year DOB (ACC1004, 1988-02-29)
+9. Edge case — prompt injection attempt (agent holds its ground)
 
 ---
 
-### 2. Verification Failure (3 retries exhausted)
+## Observability
 
-```
-Agent : Could you please share your account ID?
+Traces every LLM call via [Arize Phoenix](https://arize.com/docs/phoenix/).
 
-User  : ACC1002
+**Persistent setup** (recommended — traces survive process exit):
+```bash
+# Terminal 1 — keep running
+uv run python -m phoenix.server.main serve
 
-Agent : Thank you. Could I please have your full name as registered on the account?
-
-User  : Raja Bala
-
-Agent : I'm sorry, I wasn't able to verify that. Could you please try again with your
-        full name and date of birth or Aadhaar last 4 or pincode?
-
-User  : Rajarajeswari, DOB 23 Nov 1985
-
-Agent : I'm sorry, I wasn't able to verify that. One more attempt — please share your
-        full name and one of: date of birth, Aadhaar last 4 digits, or pincode.
-
-User  : Rajarajeswari Balasubramaniam, pin 400003
-
-Agent : I'm sorry, we were unable to verify your identity after multiple attempts.
-        Please contact our support team for assistance. Goodbye.
+# Terminal 2 — run eval or CLI
+PHOENIX=1 uv run python -m eval.run_eval --tier 3
 ```
 
-*Note: Failure on attempt 3 uses generic message regardless of reason (fraud prevention).*
-
----
-
-### 3. Payment Failure (card declined)
-
-```
-Agent : Your outstanding balance is ₹540.00. How much would you like to pay today?
-
-User  : 540
-
-Agent : Got it — ₹540.00. Please share your card number.
-
-User  : 4000000000000002
-
-Agent : And the expiry date?
-
-User  : 09/25
-
-Agent : And the CVV?
-
-User  : 456
-
-Agent : And the name on the card?
-
-User  : Rajarajeswari Balasubramaniam
-
-Agent : I'm sorry, your payment of ₹540.00 could not be processed. Please check your
-        card details or try a different card. Would you like to try again?
-
-User  : No, that's fine.
-
-Agent : Understood. Please contact us when you're ready to complete the payment.
-        Goodbye!
+**One-shot** (in-process server, traces lost on exit):
+```bash
+PHOENIX=1 uv run python cli.py
 ```
 
----
-
-### 4. Zero Balance Edge Case
-
-```
-Agent : Could you please share your account ID?
-
-User  : ACC1003
-
-Agent : Thank you. Could I please have your full name?
-
-User  : Priya Agarwal
-
-Agent : Could you confirm your date of birth or Aadhaar last 4 or pincode?
-
-User  : pincode 400003
-
-Agent : Identity verified. Your current outstanding balance is ₹0.00.
-        There is no outstanding amount on this account. Have a great day!
-```
+Browse traces at **http://localhost:6006**.
 
 ---
 
@@ -250,9 +193,11 @@ Base URL: `https://se-payment-verification-api.service.external.usea2.aws.prodig
 
 | Package | Purpose |
 |---------|---------|
-| `openai>=1.30.0` | GPT-4o structured extraction via `responses.parse` |
-| `httpx>=0.27.0` | Async-capable HTTP client for payment API |
+| `openai>=1.30.0` | GPT-5.4 structured extraction via `responses.parse` |
+| `httpx>=0.27.0` | HTTP client for payment API |
 | `pydantic>=2.7.0` | Structured output models (v2) |
-| `tenacity>=8.3.0` | Retry logic for API calls |
-| `python-dateutil>=2.9.0` | Robust date parsing |
+| `tenacity>=8.3.0` | Retry with exponential backoff on API calls |
+| `python-dateutil>=2.9.0` | Robust date parsing (handles leap years) |
 | `structlog>=24.1.0` | Structured logging |
+
+Dev: `pytest`, `pytest-asyncio`, `pytest-cov`, `respx`, `arize-phoenix`, `arize-phoenix-otel`, `openinference-instrumentation-openai`
