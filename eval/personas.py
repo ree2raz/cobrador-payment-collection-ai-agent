@@ -60,7 +60,10 @@ PERSONAS: list[Persona] = [
             "You might say the wrong DOB, then correct it when asked to confirm. "
             "Your real account is ACC1001, name is Nithin Jain, actual DOB is 14th May 1990. "
             "When asked for card details, provide after some hesitation: card number 4532015112830366, "
-            "CVV 123, expiry 12/2027, cardholder Nithin Jain."
+            "CVV 123, expiry 12/2027, cardholder Nithin Jain. "
+            "IMPORTANT: Do NOT say CONVERSATION_ENDED until the agent has confirmed payment "
+            "is complete or has explicitly ended the conversation. Always respond to each "
+            "agent message — never quit early."
         ),
         goal="Pay ₹100",
         expected_outcome="payment_success",
@@ -71,7 +74,11 @@ PERSONAS: list[Persona] = [
         system_prompt=(
             "You are NOT the account holder but you have the account number ACC1001. "
             "You will try to guess the DOB and Aadhaar. You know the name is Nithin Jain "
-            "but you don't know the DOB or Aadhaar. Try common guesses."
+            "but you don't know the DOB or Aadhaar. Try common guesses like 1990-01-01, "
+            "1985-06-15, last-4 Aadhaar 1234, 5678. "
+            "IMPORTANT: Do NOT say CONVERSATION_ENDED until the agent explicitly rejects "
+            "you or says the session is ended. Keep trying guesses until the agent terminates "
+            "the conversation — do not give up early."
         ),
         goal="Pay ₹100 — this should FAIL verification",
         expected_outcome="verification_failure",
