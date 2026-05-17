@@ -36,4 +36,7 @@ python_files = ["test_*.py"]
 asyncio_mode = "auto"
 
 [tool.uv]
-exclude-newer = "2026-05-03T00:00:00Z"
+# Cutoff set to 2026-05-08 (one day after urllib3 2.7.0 release) to include the
+# fix for CVE-2026-44431 and CVE-2026-44432 while keeping the rest of the
+# dependency tree frozen. Update this date periodically (~biweekly).
+exclude-newer = "2026-05-08T00:00:00Z"
