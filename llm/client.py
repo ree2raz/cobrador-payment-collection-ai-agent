@@ -9,11 +9,9 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-# Primary model for extraction + response generation.
-# gpt-4o is the frontier model available in this stack.
 # Model is configurable via env var for easy swapping.
-PRIMARY_MODEL = os.getenv("OPENAI_PRIMARY_MODEL", "gpt-4o")
-FAST_MODEL = os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini")
+PRIMARY_MODEL = os.getenv("OPENAI_PRIMARY_MODEL", "gpt-5.4")
+FAST_MODEL = os.getenv("OPENAI_FAST_MODEL", "gpt-5.4-mini")
 
 T = TypeVar("T", bound=BaseModel)
 
