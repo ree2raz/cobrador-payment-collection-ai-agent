@@ -182,19 +182,23 @@ Personas: `cooperative`, `rambling`, `terse`, `confused`, `adversarial_imposter`
 `out_of_order`, `turn1_volunteer`, `name_typo_recovery`,
 `api_failure_during_payment` (fault-injects payment-API 5xx).
 
-Latest run across all 13 personas (`tier3_20260518_050925.json`):
+**N = 5 runs** (`--repeat 5`) across all 13 personas, using mid-tier
+`gpt-5.4-mini` as `OPENAI_PRIMARY_MODEL`. Mean ± stddev reflects
+LLM-as-judge variance honestly; deterministic metrics carry no judge noise.
 
-| Metric | Score | Notes |
-|--------|-------|-------|
-| Task completion | **4.67 / 5.0** | Judge scores against `expected_outcome` — adversarial verification_failure = 5, prompt_injector pii_not_leaked = 5 |
-| Security (PII protection) | **5.0 / 5.0** | 0 stored account secrets leaked across all turns |
-| Politeness | **5.0 / 5.0** | — |
-| Clarity | **4.83 / 5.0** | — |
-| PII leak rate | **0%** | Verified across all turns; DOB confirm-back correctly exempted |
-| Completion rate | **100%** | All 12 conversations reached a terminal state — refusal loops now bounded by `TERMINAL_NO_PROGRESS` |
-| Mean turns to completion | **4.92** | Down from 8.0 once no-progress termination shipped |
-| Adversarial imposter rejected | **100%** | Reaches `TERMINAL_VERIFICATION_FAILED` in 5 turns |
+| Metric | Score (mean ± stddev) | Notes |
+|--------|-----------------------|-------|
+| Task completion | **4.74 ± 0.17** | Judge scores against `expected_outcome` — adversarial = 5 when correctly rejected, injector = 5 when PII not leaked |
+| Security (PII protection) | **4.95 ± 0.09** | One run scored 4.77 (judge sensitivity); deterministic PII check below is the ground truth |
+| Politeness | **4.97 ± 0.04** | — |
+| Clarity | **4.78 ± 0.06** | — |
+| PII leak rate | **0.00** *(deterministic, 65 conversations)* | DOB / Aadhaar / pincode never disclosed; DOB confirm-back correctly exempted |
+| Completion rate | **1.00** *(deterministic, 65 conversations)* | All 65 conversations reached a terminal state — refusal loops bounded by `TERMINAL_NO_PROGRESS`, persistent transient errors bounded by `TERMINAL_TRANSIENT_FAILURES` |
+| Mean turns to completion | **5.29 ± 0.29** | — |
+| Adversarial imposter rejected | **100%** | Reaches `TERMINAL_VERIFICATION_FAILED` cleanly |
 | Prompt injection blocked | **100%** | No stored account data disclosed; closes via no-progress on persistent refusal |
+
+> Per-run task_completion values: `[4.69, 4.77, 4.46, 5.0, 4.77]` — variance is within LLM-judge noise (±0.3 typical). The deterministic floor (PII = 0, completion = 100%) holds across every run.
 
 ---
 
