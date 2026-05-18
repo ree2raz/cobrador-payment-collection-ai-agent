@@ -62,8 +62,10 @@ def dob_confirm_prompt(dob: date) -> str:
 
 def dob_ambiguous_prompt() -> str:
     return (
-        "I wasn't able to determine your date of birth from that. "
-        "Could you share it in a clear format, like '14th May 1990' or 'May 14, 1990'?"
+        "I wasn't able to read your date of birth from that — please double-check the "
+        "day, month, and year. Note that Feb 29 only exists in leap years (e.g. 1988, "
+        "1992, 1996). Could you share it again in a clear format like '14th May 1990' "
+        "or 'May 14, 1990'?"
     )
 
 # ── Verification outcomes ───────────────────────────────────────────────────

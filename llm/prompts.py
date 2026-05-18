@@ -45,8 +45,13 @@ IDENTITY_EXTRACTION = (
     "extracted name. Trim whitespace. If the user gives a nickname and a full name "
     "(e.g. 'call me Raja but my full name is Rajarajeswari Balasubramaniam'), extract "
     "the FULL name, not the nickname.\n"
-    "4. For DOB: only set dob if you are certain of day, month AND year. If the format "
-    "could be DD-MM or MM-DD (e.g. '01-02-1990'), set dob = null and dob_ambiguous = true. "
+    "4. For DOB: only set dob if you are certain of day, month AND year. "
+    "If the user MENTIONED a date but you can't extract a valid one for ANY reason — "
+    "ambiguous format (e.g. '01-02-1990'), impossible date (Feb 29 in a non-leap year, "
+    "Feb 30, April 31, etc.), or only partial info — set dob = null AND dob_ambiguous = true. "
+    "Do NOT silently drop the date; the agent needs the dob_ambiguous=true signal to tell "
+    "the user we couldn't parse what they said. Only set dob_ambiguous = false when the user "
+    "did not mention any date at all OR you successfully extracted a valid one. "
     "Two-digit years for DOB are always 19XX (a customer's birth year cannot be in the "
     "future): 'May 14, 90' → 1990-05-14, 'born in 88' → year 1988. This is DOB-specific; "
     "do NOT apply the same rule to card expiry years.\n"
@@ -78,6 +83,14 @@ IDENTITY_EXTRACTION = (
     '→ {{"full_name": "Rajarajeswari Balasubramaniam", "dob": null, "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
     '"I was born 01-02-90"\n'
+    '→ {{"full_name": null, "dob": null, "dob_ambiguous": true, '
+    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
+    "// Impossible date — Feb 29 in a non-leap year. Mark ambiguous, don't drop:\n"
+    '"dob is 1998-02-29"\n'
+    '→ {{"full_name": null, "dob": null, "dob_ambiguous": true, '
+    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
+    "// Impossible date — Feb 30 doesn't exist:\n"
+    '"born 30 feb 1990"\n'
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": true, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
     '"my Aadhaar number is 1234 5678 4321"\n'
