@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+import os
+import logging
+from typing import Type, TypeVar
+
+from openai import OpenAI
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
+
+# Model is configurable via env var for easy swapping.
+PRIMARY_MODEL = os.getenv("OPENAI_PRIMARY_MODEL", "gpt-5.4")
+FAST_MODEL = os.getenv("OPENAI_FAST_MODEL", "gpt-5.4-mini")
+
+T = TypeVar("T", bound=BaseModel)
+
+_client: OpenAI | None = None
+
+
+def get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not set. Export it before running the agent."
+            )
+        _client = OpenAI(api_key=api_key)
+    return _client
+
+
+def extract_structured(
+    prompt: str,
+    schema: Type[T],
+    model: str = PRIMARY_MODEL,
+    temperature: float = 0.0,
+) -> T:
+    """
+    Call OpenAI with structured output (guaranteed schema compliance).
+    Uses Pydantic model as the response schema.
+    """
+    client = get_client()
+    response = client.responses.parse(
+        model=model,
+        input=[{"role": "user", "content": prompt}],
+        text_format=schema,
+        temperature=temperature,
+    )
+    result = response.output_parsed
+    if result is None:
+        raise ValueError(f"OpenAI returned null output for schema {schema.__name__}")
+    return result

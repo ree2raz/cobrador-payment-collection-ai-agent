@@ -1,2 +1,13 @@
 Agent*.pdf
 *.xml
+__pycache__/
+*.pyc
+.venv/
+.env
+eval/results/
+.pytest_cache/
+*_CONTEXT.md
+.coverage
+*.file
+logs/
+*.jsonl

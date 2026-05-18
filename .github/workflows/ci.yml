@@ -4,11 +4,19 @@ on:
   pull_request:
     branches: [main, dev]
   push:
-    branches: [main]
+    branches: [main, dev]
+
+# Cancel an in-progress run when a new commit lands on the same ref
+# (e.g. force-push during a PR). Saves CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
+    name: Tests (tiers 1 + 2) + coverage gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -16,9 +24,37 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          # Cache uv's package resolver across runs for faster installs.
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
         run: uv sync --all-extras --dev
 
-      - name: Run tests (offline, skip live LLM)
-        run: uv run pytest -m "not integration" --cov=. --cov-report=term-missing
+      - name: Run deterministic tests with coverage
+        # `-m "not integration"` skips the 23 live-LLM cases (they need
+        # OPENAI_API_KEY and would fail offline). Coverage is calculated
+        # over the app code only.
+        #
+        # Threshold is 80% rather than 95% because llm/extractors.py and
+        # llm/client.py are exercised by the integration tests we skip
+        # here — their wrappers run live against OpenAI in `--messy`. Tier
+        # 2 scenarios patch them at the `handlers.*` boundary so the
+        # wrappers themselves don't execute under offline pytest.
+        run: |
+          uv run pytest \
+            -m "not integration" \
+            --cov=core --cov=llm --cov=tools --cov=output \
+            --cov=agent --cov=handlers --cov=event_log \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=80
+
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
+          retention-days: 7
