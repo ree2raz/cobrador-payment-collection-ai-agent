@@ -51,12 +51,13 @@ MAX_NO_PROGRESS_TURNS = 5
 # the session. Closes the "LLM-down infinite-hiccup" hole.
 MAX_CONSECUTIVE_TRANSIENT_ERRORS = 3
 
-# States where the no-progress counter applies (the three collection loops)
-_NO_PROGRESS_STATES = {
-    "AWAITING_IDENTITY",
-    "AWAITING_AMOUNT",
-    "AWAITING_CARD",
+# States where the no-progress counter applies, mapped to their terminal messages.
+_NO_PROGRESS_MESSAGES: dict[str, str] = {
+    "AWAITING_IDENTITY": R.NO_PROGRESS_IDENTITY,
+    "AWAITING_AMOUNT":   R.NO_PROGRESS_AMOUNT,
+    "AWAITING_CARD":     R.NO_PROGRESS_CARD,
 }
+_NO_PROGRESS_STATES = set(_NO_PROGRESS_MESSAGES)
 
 
 class Agent(_CollectionHandlers):
@@ -176,13 +177,7 @@ class Agent(_CollectionHandlers):
         )
 
     def _terminate_no_progress(self) -> str:
-        state_name = self._conv.state.name
-        if state_name == "AWAITING_IDENTITY":
-            msg = R.NO_PROGRESS_IDENTITY
-        elif state_name == "AWAITING_AMOUNT":
-            msg = R.NO_PROGRESS_AMOUNT
-        else:
-            msg = R.NO_PROGRESS_CARD
+        msg = _NO_PROGRESS_MESSAGES.get(self._conv.state.name, R.NO_PROGRESS_CARD)
         self._conv.transition(State.TERMINAL_NO_PROGRESS, trigger="no_progress")
         return msg
 

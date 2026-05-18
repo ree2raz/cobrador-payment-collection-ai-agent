@@ -85,6 +85,10 @@ class _IdentityCapture:
 class _CollectionHandlers:
     """Per-state handler methods. Mixed into Agent."""
 
+    def _cancel(self) -> str:
+        self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
+        return R.ABORTED
+
     # ── Shared identity capture (regex + LLM) ───────────────────────────────
 
     def _extract_identity_fields(
@@ -143,8 +147,7 @@ class _CollectionHandlers:
             return R.GREETING
         extraction = extract_account_id(user_input)
         if extraction.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
+            return self._cancel()
         if extraction.account_id is None:
             # No account ID — stash any volunteered name / aadhaar /
             # pincode (DOB skipped: no account context yet for confirm-back)
@@ -166,8 +169,7 @@ class _CollectionHandlers:
         extraction = extract_account_id(user_input)
 
         if extraction.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
+            return self._cancel()
 
         if extraction.account_id is None:
             # Stash any volunteered identity so we don't re-ask later.
@@ -260,8 +262,7 @@ class _CollectionHandlers:
         extraction = extract_identity(user_input, already)
 
         if extraction.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
+            return self._cancel()
 
         # Merge newly extracted fields (don't overwrite existing with None)
         if extraction.full_name is not None:
@@ -298,8 +299,7 @@ class _CollectionHandlers:
         confirmation = extract_dob_confirmation(user_input, self._conv.pending_dob)
 
         if confirmation.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
+            return self._cancel()
 
         if confirmation.user_intent == "confirmed":
             self._conv.provided_dob = self._conv.pending_dob
@@ -374,8 +374,7 @@ class _CollectionHandlers:
         cap = self._extract_identity_fields(user_input, already_collected=already)
 
         if cap.wants_to_cancel:
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
+            return self._cancel()
 
         captured = (
             any((cap.name, cap.dob, cap.aadhaar_last4, cap.pincode))
@@ -517,8 +516,7 @@ class _CollectionHandlers:
         extraction = extract_amount(user_input, balance)
 
         if extraction.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
+            return self._cancel()
 
         if extraction.wants_full_balance:
             amount = balance
@@ -597,8 +595,7 @@ class _CollectionHandlers:
         extraction = extract_card(user_input, already)
 
         if extraction.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
+            return self._cancel()
 
         # Merge into existing card state. Empty string / zero in the stored
         # partial means the field was cleared by a prior validation error.
