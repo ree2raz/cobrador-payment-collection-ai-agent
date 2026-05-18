@@ -62,7 +62,8 @@ MESSY_CASES: list[MessyCase] = [
     MessyCase("dob", "hinglish dob",
               "DOB hai 14 may 1990", "dob", date(1990, 5, 14)),
     MessyCase("dob", "DD-MM-YYYY",
-              "14-5-1990", "dob", date(1990, 5, 14)),
+              # Brief page 2 verbatim: "14-05-1990"
+              "14-05-1990", "dob", date(1990, 5, 14)),
     MessyCase("dob", "ambiguous flagged",
               "01-02-1990", "dob_ambiguous", True),
     MessyCase("dob", "leap year verbal",

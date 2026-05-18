@@ -55,7 +55,7 @@ def run_messy() -> dict:
     from eval.messy_cases import MESSY_CASES, run_case
 
     print("\n" + "=" * 60)
-    print("MESSY EXTRACTION ACCURACY  (21 production-style inputs)")
+    print(f"MESSY EXTRACTION ACCURACY  ({len(MESSY_CASES)} production-style inputs)")
     print("=" * 60)
 
     group_results: dict[str, list[tuple[str, bool, str]]] = {}
@@ -79,7 +79,10 @@ def run_messy() -> dict:
     total_pass = total_n = 0
     group_rows = []
     for group, rows in group_results.items():
-        n_pass = sum(1 for _, p, _ in rows)
+        # Bug fix: filter on `p` — previously summed 1 for every row
+        # regardless of pass/fail, so the table over-reported when any
+        # case failed (dob 7/7 even though one was ✗).
+        n_pass = sum(1 for _, p, _ in rows if p)
         n = len(rows)
         total_pass += n_pass
         total_n += n
@@ -115,7 +118,7 @@ def run_messy() -> dict:
         "total_cases": total_n,
         "accuracy": round(total_pass / total_n, 3),
         "by_group": {
-            g: {"pass": sum(1 for _, p, _ in r), "total": len(r)}
+            g: {"pass": sum(1 for _, p, _ in r if p), "total": len(r)}
             for g, r in group_results.items()
         },
     }

@@ -87,6 +87,11 @@ IDENTITY_EXTRACTION = (
     '"I was born 01-02-90"\n'
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": true, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
+    "// DD-MM-YYYY where first group >12 — month=14 is impossible, so the\n"
+    "// only valid reading is DD-MM-YYYY. NOT ambiguous, extract directly:\n"
+    '"14-05-1990"\n'
+    '→ {{"full_name": null, "dob": "1990-05-14", "dob_ambiguous": false, '
+    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
     "// Impossible date — Feb 29 in a non-leap year. Mark ambiguous, don't drop:\n"
     '"dob is 1998-02-29"\n'
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": true, '
