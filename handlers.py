@@ -497,9 +497,6 @@ class _CollectionHandlers:
             return R.ASK_NAME_AND_SECONDARY
         if not has_name:
             return R.ASK_NAME
-        if not has_secondary:
-            return R.ASK_SECONDARY
-        # Should not reach here
         return R.ASK_SECONDARY
 
     # ── Amount handler ──────────────────────────────────────────────────────
@@ -603,18 +600,14 @@ class _CollectionHandlers:
             self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
             return R.ABORTED
 
-        # Merge into existing card state. Treat empty string / zero in the
-        # stored partial as "missing" — those values mean a validation error
-        # cleared the field on a prior turn.
-        def _carry(stored):
-            return stored if stored else None
-
+        # Merge into existing card state. Empty string / zero in the stored
+        # partial means the field was cleared by a prior validation error.
         current = self._conv.card
-        card_number = extraction.card_number or _carry(current.card_number if current else None)
-        cvv = extraction.cvv or _carry(current.cvv if current else None)
-        expiry_month = extraction.expiry_month or _carry(current.expiry_month if current else None)
-        expiry_year = extraction.expiry_year or _carry(current.expiry_year if current else None)
-        cardholder_name = extraction.cardholder_name or _carry(current.cardholder_name if current else None)
+        card_number = extraction.card_number or (current.card_number if current else None) or None
+        cvv = extraction.cvv or (current.cvv if current else None) or None
+        expiry_month = extraction.expiry_month or (current.expiry_month if current else None) or None
+        expiry_year = extraction.expiry_year or (current.expiry_year if current else None) or None
+        cardholder_name = extraction.cardholder_name or (current.cardholder_name if current else None) or None
 
         # Identify missing fields for re-prompting
         missing = []
