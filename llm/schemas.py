@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AccountIdExtraction(BaseModel):
@@ -49,6 +49,27 @@ class IdentityExtraction(BaseModel):
         description="6-digit Indian pincode, digits only. Null if not provided.",
     )
     user_intent: Literal["providing_info", "asking_question", "wants_to_cancel"]
+
+    @model_validator(mode="before")
+    @classmethod
+    def reroute_invalid_dob_as_ambiguous(cls, data: object) -> object:
+        """Catch dates that are syntactically ISO but don't exist on the
+        calendar (e.g. '1998-02-29' — 1998 isn't a leap year, so Feb 29
+        doesn't exist). Pydantic v2's strict date parser raises
+        ValidationError on these, which would propagate up as an
+        unhandled exception and surface to the user as a generic 'brief
+        technical hiccup' instead of the appropriate 'please share a
+        valid date' prompt. We re-route to dob_ambiguous=True so the
+        FSM handles it gracefully via the existing ambiguous-DOB path."""
+        if not isinstance(data, dict):
+            return data
+        raw_dob = data.get("dob")
+        if isinstance(raw_dob, str) and raw_dob:
+            try:
+                date.fromisoformat(raw_dob)
+            except (ValueError, TypeError):
+                data = {**data, "dob": None, "dob_ambiguous": True}
+        return data
 
     @field_validator("full_name", mode="before")
     @classmethod

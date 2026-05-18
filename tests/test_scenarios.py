@@ -982,7 +982,34 @@ def test_payment_api_persistently_down_terminates_cleanly(
     assert "unable" in r.lower() or "sorry" in r.lower()
 
 
-# ── Scenario 26: Missing OPENAI_API_KEY raises a clear error, not KeyError ──
+# ── Scenario 26: Invalid calendar date (Feb 29 non-leap) → ambiguous, not crash
+
+@patch("handlers.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("handlers.extract_account_id", side_effect=smart_account_id)
+def test_invalid_calendar_date_prompts_user_not_crash(mock_eid, mock_la):
+    """User types a date that's syntactically ISO but doesn't exist on
+    the calendar (e.g. '1998-02-29' — 1998 isn't a leap year). The
+    schema's model_validator must reroute to dob_ambiguous=True so the
+    agent prompts for a clearer date rather than surfacing a pydantic
+    ValidationError as a generic TRANSIENT_ERROR ("brief hiccup")."""
+    from llm.schemas import IdentityExtraction
+    invalid = IdentityExtraction(
+        dob="1998-02-29",
+        full_name="Some Name",
+        user_intent="providing_info",
+    )
+    assert invalid.dob is None
+    assert invalid.dob_ambiguous is True
+
+    with patch("handlers.extract_identity", return_value=invalid):
+        agent = Agent()
+        agent.next("hi"); agent.next("ACC1001")
+        r = msg(agent.next("dob is 1998-02-29"))
+        assert agent._conv.state == State.AWAITING_IDENTITY
+        assert "date" in r.lower() or "clear" in r.lower() or "format" in r.lower()
+
+
+# ── Scenario 27: Missing OPENAI_API_KEY raises a clear error, not KeyError ──
 
 def test_missing_api_key_clear_error(monkeypatch):
     import importlib
