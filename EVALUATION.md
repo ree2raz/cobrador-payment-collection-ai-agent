@@ -45,18 +45,19 @@ Multi-turn flows driven through `Agent.next()` with mocked APIs:
 - Independent payment retry budgets — client-side validation vs API-side errors
 - Consecutive-transient-error termination (`TERMINAL_TRANSIENT_FAILURES`) when LLM is down
 
-### Tier 1.5 — Messy Extraction Accuracy (`eval/messy_cases.py`, 23 live cases)
+### Tier 1.5 — Messy Extraction Accuracy (`eval/messy_cases.py`, 31 live cases)
 
 Live LLM calls against the brief's exact phrasings. Skipped offline; run before submission with `--messy`.
 
-| Extractor | Inputs |
-|-----------|--------|
-| account_id | `"yeah my account number is ACC1001 I think"`, `"acc 1001"`, lowercase, hyphenated |
-| name | `"my name is X"`, `"it's X, X"`, nickname-vs-full, lowercase title-casing |
-| dob | `"I was born on 14th May 1990"`, `"DOB is May 14, 90"`, `"14-05-1990"`, ambiguous, leap-year |
-| aadhaar | last-4 only from `"last four of my Aadhaar is 4321"`, full 12 → last 4 |
-| amount | `"a thousand rupees"`, `"clear the full amount"`, `"can I do 500 for now"` |
-| card | spaced number, verbal CVV `"one two three"`, verbal expiry, compound |
+| Extractor | Cases | Brief-aligned coverage |
+|-----------|-------|------------------------|
+| account_id | 4 | `"it's acc 1001"`, hyphenated, hesitant filler (`"I think... it's ACC 1001 yeah"`), hinglish |
+| name | 7 | `"my name is Nithin Jain"`, `"it's Nithin, Nithin Jain"` (repetition), `"call me Raja but my full name is Rajarajeswari Balasubramaniam"` (nickname+full), self-correction, honorific, hinglish, compound first-turn |
+| dob | 7 | `"I was born on 14th May 1990"`, `"DOB is May 14, 90"` (2-digit year), `"14-5-1990"`, ambiguous (`"01-02-1990"`), leap-year verbal, compound, hinglish |
+| aadhaar | 3 | full 12-digit → last 4, `"Aadhaar ends with 9876, shall I give pincode instead?"`, `"last four of my Aadhaar is 4321"` |
+| pincode | 1 | `"pincode? it's 4 0 0 0 0 1"` (spaced single digits) |
+| amount | 5 | `"I want to pay a thousand rupees"` (verbal), `"₹500 please"`, `"pay it all"`, `"can I do 500 for now?"` (hesitant), `"five hundred"` |
+| card | 4 | spaced card number (`"4532 0151 1283 0366"`), verbal CVV (`"one two three"`), verbal expiry month (`"December 2027"`), 2-digit expiry year (`"12/27"`) |
 
 ### Tier 3 — Persona Simulation (`eval/personas.py`, 13 personas)
 

@@ -15,7 +15,7 @@ from typing import Any
 
 @dataclass
 class MessyCase:
-    group: str       # extractor group: account_id | name | dob | aadhaar | amount | card
+    group: str       # extractor group: account_id | name | dob | aadhaar | pincode | amount | card
     label: str       # short description, used as pytest ID and table row label
     input_text: str  # the raw messy user message
     check_field: str # field name on the extraction result to assert
@@ -46,6 +46,14 @@ MESSY_CASES: list[MessyCase] = [
     MessyCase("name", "compound first turn",
               "Hi, my account is ACC1001, name Nithin Jain, DOB 14th May 1990, I want to pay 400 rupees",
               "full_name", "Nithin Jain"),
+    MessyCase("name", "name repetition",
+              # Brief page 2: "it's Nithin, Nithin Jain"
+              "it's Nithin, Nithin Jain", "full_name", "Nithin Jain"),
+    MessyCase("name", "nickname plus full",
+              # Brief page 2: "you can call me Raja but my full name is Rajarajeswari Balasubramaniam"
+              # Must extract the FULL name, not the nickname.
+              "you can call me Raja but my full name is Rajarajeswari Balasubramaniam",
+              "full_name", "Rajarajeswari Balasubramaniam"),
 
     # ── DOB ─────────────────────────────────────────────────────────────────────
     MessyCase("dob", "two-digit year",
@@ -59,6 +67,9 @@ MESSY_CASES: list[MessyCase] = [
               "01-02-1990", "dob_ambiguous", True),
     MessyCase("dob", "leap year verbal",
               "29th february 1988", "dob", date(1988, 2, 29)),
+    MessyCase("dob", "born-on natural",
+              # Brief page 2: "I was born on 14th May 1990"
+              "I was born on 14th May 1990", "dob", date(1990, 5, 14)),
     MessyCase("dob", "compound first turn",
               "Hi, my account is ACC1001, name Nithin Jain, DOB 14th May 1990, I want to pay 400 rupees",
               "dob", date(1990, 5, 14)),
@@ -70,6 +81,16 @@ MESSY_CASES: list[MessyCase] = [
               # Brief page 2: "Aadhaar ends with 9876, shall I give pincode instead?"
               "Aadhaar ends with 9876, shall I give pincode instead?",
               "aadhaar_last4", "9876"),
+    MessyCase("aadhaar", "last-four labeled",
+              # Brief page 2: "last four of my Aadhaar is 4321"
+              "last four of my Aadhaar is 4321", "aadhaar_last4", "4321"),
+
+    # ── Pincode ──────────────────────────────────────────────────────────────────
+    MessyCase("pincode", "spaced single digits",
+              # Brief page 2: "pincode? it's 4 0 0 0 0 1"
+              # The pincode normalizer strips spaces; 6 single digits with
+              # spaces between them must yield the canonical 6-digit form.
+              "pincode? it's 4 0 0 0 0 1", "pincode", "400001"),
 
     # ── Amount ───────────────────────────────────────────────────────────────────
     MessyCase("amount", "words rupees",
@@ -81,6 +102,14 @@ MESSY_CASES: list[MessyCase] = [
     MessyCase("amount", "pay it all",
               "pay it all", "wants_full_balance", True,
               {"balance": Decimal("2000")}),
+    MessyCase("amount", "verbal thousand",
+              # Brief page 2: "I want to pay a thousand rupees"
+              "I want to pay a thousand rupees", "amount", Decimal("1000"),
+              {"balance": Decimal("2000")}),
+    MessyCase("amount", "hesitant phrasing",
+              # Brief page 2: "can I do 500 for now?"
+              "can I do 500 for now?", "amount", Decimal("500"),
+              {"balance": Decimal("2000")}),
 
     # ── Card ─────────────────────────────────────────────────────────────────────
     MessyCase("card", "spaced card number",
@@ -89,6 +118,9 @@ MESSY_CASES: list[MessyCase] = [
               "CVV is one two three", "cvv", "123"),
     MessyCase("card", "verbal expiry month",
               "expires December 2027", "expiry_month", 12),
+    MessyCase("card", "two-digit expiry year",
+              # Brief page 2: "12/27" — must parse year=2027, not 2027 ambiguous
+              "expires 12/27", "expiry_year", 2027),
 ]
 
 
@@ -98,7 +130,7 @@ def run_case(case: MessyCase) -> Any:
 
     if case.group == "account_id":
         return extract_account_id(case.input_text)
-    elif case.group in ("name", "dob", "aadhaar"):
+    elif case.group in ("name", "dob", "aadhaar", "pincode"):
         return extract_identity(case.input_text, {})
     elif case.group == "amount":
         balance = case.extra.get("balance", Decimal("2000"))

@@ -57,7 +57,9 @@ IDENTITY_EXTRACTION = (
     "do NOT apply the same rule to card expiry years.\n"
     "5. For Aadhaar: extract only the last 4 digits. If user states their full 12-digit "
     "Aadhaar, extract only the last 4 — NEVER output the full number.\n"
-    "6. For pincode: must be exactly 6 digits.\n"
+    "6. For pincode: must be exactly 6 digits. Strip spaces between digits "
+    "before returning — e.g. '4 0 0 0 0 1' → '400001'. The pydantic validator "
+    "rejects values that aren't 6 digits after normalization.\n"
     "7. user_intent: classify the primary purpose of their message.\n"
     '8. If user says "stop", "cancel", "quit", "end" → user_intent = "wants_to_cancel".\n\n'
     "EXAMPLES:\n"
@@ -97,6 +99,10 @@ IDENTITY_EXTRACTION = (
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": false, '
     '"aadhaar_last4": "4321", "pincode": null, "user_intent": "providing_info"}}\n\n'
     '"pincode 400001"\n'
+    '→ {{"full_name": null, "dob": null, "dob_ambiguous": false, '
+    '"aadhaar_last4": null, "pincode": "400001", "user_intent": "providing_info"}}\n\n'
+    "// Spaced single-digit pincode — strip spaces:\n"
+    '"pincode? it\'s 4 0 0 0 0 1"\n'
     '→ {{"full_name": null, "dob": null, "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": "400001", "user_intent": "providing_info"}}\n\n'
     "User's message: {user_input}"

@@ -96,7 +96,7 @@ cobrador/
 │   ├── personas.py        # 13 simulation personas
 │   ├── simulator.py       # LLM-driven user simulator
 │   ├── judge.py           # LLM-as-judge scoring
-│   ├── messy_cases.py     # 21 production-style messy extraction test cases
+│   ├── messy_cases.py     # 31 production-style messy extraction test cases
 │   └── run_eval.py        # Three-tier eval runner CLI
 └── tests/                 # 183 deterministic tests passing + 23 live LLM tests skipped offline
     └── test_extraction_messy.py  # Tier 1.5: live LLM messy extraction tests
@@ -126,7 +126,7 @@ uv run python -m eval.run_eval --tier 3 --repeat 5
 # Tier 3 — run specific personas only
 uv run python -m eval.run_eval --tier 3 --personas cooperative rambling adversarial_imposter
 
-# Messy extraction accuracy (21 production-style inputs)
+# Messy extraction accuracy (31 production-style inputs)
 uv run python -m eval.run_eval --messy
 
 # Full pipeline
@@ -158,19 +158,20 @@ PHOENIX=1 uv run python -m eval.run_eval --tier 3
 
 ### Tier 1.5 — Messy Extraction Accuracy
 
-23 production-style inputs covering brief's exact phrasings (verbal CVV digits,
+31 production-style inputs covering brief's exact phrasings (verbal CVV digits,
 spaced pincode, nickname-vs-full-name, leap-year DOB, ambiguous dates, hesitant
 account-ID phrasing).
 
 | Extractor | Cases | Result |
 |-----------|-------|--------|
-| account_id (lowercase, hyphenated, hesitant) | 4/4 | ✅ 100% |
-| name (filler words, self-correction, honorific, nickname-vs-full) | 4/4 | ✅ 100% |
-| dob (verbal, DD-MM-YYYY, ambiguous flagged, leap year) | 5/5 | ✅ 100% |
-| aadhaar (full 12-digit → last 4, labeled last-4) | 2/2 | ✅ 100% |
-| amount (words, ₹ symbol, "pay it all") | 3/3 | ✅ 100% |
-| card (spaced number, verbal CVV, verbal expiry, compound) | 5/5 | ✅ 100% |
-| **Total** | **23/23** | **✅ 100%** |
+| account_id (lowercase, hyphenated, hesitant filler, hinglish) | 4/4 | ✅ 100% |
+| name (filler words, self-correction, honorific, nickname-vs-full, "Nithin, Nithin Jain" repetition, compound first turn) | 7/7 | ✅ 100% |
+| dob (verbal, DD-MM-YYYY, "DOB is May 14, 90" 2-digit year, "born on 14th May 1990", ambiguous flagged, leap year, compound) | 7/7 | ✅ 100% |
+| aadhaar (full 12-digit → last 4, "ends with X", "last four is X") | 3/3 | ✅ 100% |
+| pincode (spaced single digits `4 0 0 0 0 1`) | 1/1 | ✅ 100% |
+| amount ("five hundred rupees", ₹ symbol, "pay it all", "a thousand rupees", "can I do 500 for now") | 5/5 | ✅ 100% |
+| card (spaced number, verbal CVV "one two three", verbal expiry "December 2027", 2-digit expiry "12/27") | 4/4 | ✅ 100% |
+| **Total** | **31/31** | **✅ 100%** |
 
 ### Tier 3 — Persona Simulation (13 personas, LLM-as-judge)
 
