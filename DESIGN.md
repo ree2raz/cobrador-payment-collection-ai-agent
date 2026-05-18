@@ -1,138 +1,94 @@
 # Cobrador — Design Document
 
-## Executive Summary
-
-Cobrador is a payment collection voice/text agent built for compliance-sensitive debt recovery. The core architecture uses a **deterministic finite state machine (FSM)** for all control flow, with the **LLM confined exclusively to structured field extraction** from natural language. This separation ensures predictable, auditable behavior while gracefully handling the messiness of real user input. Every FSM transition is guarded by an explicit allow-list; every outgoing message is templated and runs through a PII redaction layer; every API call is preceded by client-side validation.
-
----
-
 ## Architecture Overview
 
-```xml
-User Input
-    │
-    ▼
-┌─────────────────────────────────────────────────────────┐
-│                      agent.py                           │
-│              next(user_input: str) -> dict              │
-│   - top-level exception boundary → TRANSIENT_ERROR      │
-│   - PII redaction post-processor (allow_dob_readback)   │
-└────────────────────────┬────────────────────────────────┘
-                         │
-          ┌──────────────▼──────────────┐
-          │    core/state_machine.py    │
-          │   ALLOWED_TRANSITIONS map   │
-          │   InvalidTransitionError    │
-          │   ConversationState + State │
-          └──────────────┬──────────────┘
-                         │
-        ┌────────────────┼────────────────┐
-        │                │                │
-        ▼                ▼                ▼
-┌──────────────┐  ┌─────────────┐  ┌──────────────┐
-│ llm/         │  │ core/       │  │ tools/       │
-│ extractors   │  │ verification│  │ payment_api  │
-│ schemas      │  │ validators  │  │ (httpx +     │
-│ prompts      │  │ normaliza-  │  │  tenacity)   │
-│              │  │ tion        │  │              │
-│ +            │  │ identity_   │  │              │
-│ core/        │  │ regex (deterministic        │
-│ identity_    │  │  pre-extractor for explicit │
-│ regex.py     │  │  labeled patterns)          │
-└──────────────┘  └─────────────┘  └──────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────────────────────┐
-│                    output/                              │
-│   responses.py (templated)  +  pii_filter.py (redact)  │
-└─────────────────────────────────────────────────────────┘
+Cobrador is a payment-collection agent built on a **deterministic finite
+state machine** that owns all flow control. The LLM is confined to
+**structured field extraction** from messy natural language — it never
+routes the conversation or generates user-facing copy. **90% of responses
+are templated**, so PII safety is guaranteed by construction; only the
+balance and transaction ID are interpolated from external data.
+
+```
+User input → Agent.next(str) → {"message": str}
+                  │
+                  ▼
+        ┌──────────────────────┐
+        │   FSM dispatcher     │  agent.py — entry point + lifecycle
+        │   + exception        │  (snapshot-diff for no-progress detection,
+        │     boundary         │   consecutive-transient-error guard)
+        └──────────┬───────────┘
+                   │
+        ┌──────────▼───────────┐    ┌─────────────────────────┐
+        │  Per-state handlers  │ ←→ │  core/state_machine.py  │
+        │  (handlers.py mixin) │    │  ALLOWED_TRANSITIONS    │
+        │                      │    │  InvalidTransitionError │
+        └──────┬──┬────────┬───┘    └─────────────────────────┘
+               │  │        │
+       ┌───────┘  │        └─────────┐
+       ▼          ▼                  ▼
+  ┌─────────┐ ┌──────────┐  ┌────────────────┐
+  │  llm/   │ │ tools/   │  │ output/        │
+  │ extract │ │ payment_ │  │ responses (90% │
+  │ schemas │ │ api      │  │ templated)     │
+  │ prompts │ │ (httpx + │  │ pii_filter     │
+  │         │ │ tenacity)│  │ (redaction)    │
+  └─────────┘ └──────────┘  └────────────────┘
 ```
 
-**State flow**: `INIT → AWAITING_ACCOUNT_ID → LOOKING_UP_ACCOUNT → AWAITING_IDENTITY → VERIFYING → SHARE_BALANCE → AWAITING_AMOUNT → AWAITING_CARD → PROCESSING_PAYMENT → CONFIRM_AND_CLOSE | TERMINAL_{ACCOUNT_NOT_FOUND, VERIFICATION_FAILED, PAYMENT_FAILED, NO_PROGRESS, TRANSIENT_FAILURES, USER_ABORTED}`
+**State flow:** `INIT → AWAITING_ACCOUNT_ID → LOOKING_UP_ACCOUNT →
+AWAITING_IDENTITY → VERIFYING → SHARE_BALANCE → AWAITING_AMOUNT →
+AWAITING_CARD → PROCESSING_PAYMENT → CONFIRM_AND_CLOSE`, with six terminal
+failure states (`ACCOUNT_NOT_FOUND`, `VERIFICATION_FAILED`,
+`PAYMENT_FAILED`, `NO_PROGRESS`, `TRANSIENT_FAILURES`, `USER_ABORTED`).
 
 ---
 
-## Key Design Decisions
+## Key Decisions
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Control flow | Deterministic FSM, not LLM-routed | LLM routing is unauditable in compliance flows; FSM transitions are guarded by `ALLOWED_TRANSITIONS` and any unlisted transition raises `InvalidTransitionError` so latent bugs surface in tests, not production |
-| LLM scope | Per-state structured extraction only | Each prompt is single-purpose, few-shot, and pydantic-typed. Smaller prompts = higher accuracy + cheap unit-testability |
-| Extraction backup | Deterministic regex pre-extractor | Reasoning models can silently drop fields in compound messages. `core/identity_regex.py` catches labeled patterns (name/DOB/Aadhaar/pincode) before the LLM runs; LLM fills gaps for unlabeled forms |
-| Opportunistic capture | Each handler harvests volunteered info regardless of FSM position | Honors brief rule "do not re-ask for info already provided" without violating "do not skip steps" — fields are captured early, but FSM still walks every state in order |
-| Name matching | Unicode-NFC, **case-sensitive** exact match | Brief explicitly forbids "case-insensitive workarounds for names". Messy lowercase / all-caps input is normalized to Title-Case in the LLM extractor (per the brief's guidance: the LLM is what handles messy natural language) — verification stays strict. An internal `name_case_only_mismatch` flag in the event log surfaces LLM-side normalization failures without ever leaking the cause to the user |
-| Retry message factor-agnostic | "Details don't match — please re-check your full name. If unsure about DOB, try Aadhaar last 4 / pincode." | Brief only lists DOB/Aadhaar/pincode as protected (not name), so naming the failing field is not a literal violation — but it tells an attacker which secondary factor they got right, enabling elimination attacks across 3 retries. Industry-standard collections practice: never reveal which factor failed. The retry message still guides the cooperative user to re-check name and offers an alternate secondary factor if uncertain |
-| Payment retry budgets | **Two independent counters**: `card_validation_retries` for user-fixable errors (client-side Luhn / CVV / expiry, plus API 422 with invalid_card / invalid_cvv / invalid_expiry) and `payment_api_retries` for server-side errors (5xx after tenacity exhausted). Brief asks us to "distinguish user-fixable errors from terminal failures" — sharing one counter conflates the two |
-| Verification retries | 3 attempts; **fields retained** across retries | A typo in one field (typically the name) is the most common failure mode for cooperative users. Wiping all fields forces re-confirmation of DOB the user already validated. The next-turn extractor overwrites whichever field they re-state; `verification_retries` counter still bounds brute-force attempts |
-| Retry message | Suggests trying an alternate secondary factor | Can't reveal which field was wrong (privacy), but the message tells the user they can switch from DOB to Aadhaar/pincode if uncertain |
-| Question handling | Asking a question during account-ID collection does **not** burn a retry | Distinguishes cooperative-but-confused users from junk input. Only an attempted-but-unparseable ID counts against the lookup-retry budget |
-| Lookup transient error | Separate message from account-not-found | A 5xx after tenacity retried 3× is a technical issue, not a security signal. Different terminal message tells the caller to try again later vs. the enumeration-protected "unable to locate" |
-| DOB confirm-back | "Is 14 May 1990 correct?" | Echoes **user-provided input** (to disambiguate DD/MM vs MM/DD), not account data. The account's stored DOB is never revealed in any agent message |
-| PII filter exemption | `allow_dob_readback=True` only while `awaiting_dob_confirmation` | Otherwise the redaction layer would clobber the legitimate readback and the customer would see "[REDACTED]" with no way to confirm |
-| Cardholder name | Collected from user | Auto-filling from account fails for legitimate third-party payers |
-| Card data retention | Partial card retained across validation errors; cleared after API call | User may need 2–3 turns to provide all four fields. On each validation error, only the offending field is cleared, so the user re-enters just that one. `conv.clear_card()` runs immediately after `process_payment` returns |
-| Response generation | Templated, never LLM-generated | Deterministic, testable, PII-safe by construction. Only the balance and transaction-id strings ever come from external data |
-| Observability | Phoenix OTEL tracing via `phoenix.otel.register(auto_instrument=True)` | Every extractor call is traced (prompt, response, latency) so debugging eval failures takes seconds, not hours |
-
----
-
-## Failure Handling Map
-
-| Failure | Detection | User-visible response | FSM outcome |
-|---------|-----------|----------------------|-------------|
-| Account not found (404) | `lookup_account` 404 | Generic "couldn't locate" (enumeration-resistant) | Re-prompt, terminal after 3 |
-| Lookup endpoint down | tenacity `ServerError` after 3 retries | "Temporary technical issue — try again later" | Terminal, distinct message |
-| Verification mismatch | `verify_identity` strict compare | "Doesn't match — try alternate secondary factor" | Re-prompt, terminal after 3 |
-| Ambiguous DOB format | Schema flag `dob_ambiguous=true` | "Please share DOB in a clear format" | Stays in AWAITING_IDENTITY |
-| Invalid card (Luhn) | Client-side `luhn_check` before API | "Card number invalid — re-enter" | Stays in AWAITING_CARD; payment_retries +1 |
-| Invalid CVV / expired card | Client-side validators before API | Field-specific message; offending field cleared | Stays in AWAITING_CARD; payment_retries +1 |
-| Insufficient balance | Client-side `validate_amount` before API; also API 422 | "Amount exceeds balance" or terminal | Re-prompt amount or terminal |
-| Payment API 5xx | tenacity retry → terminal after 3 | "Technical issue — call back" | Terminal payment failed |
-| LLM/network blip mid-turn | Top-level `except Exception` in `next()` | "Brief hiccup — please repeat" | State unchanged; no retry burned |
-| Empty / silent turn | Length check before LLM call | State-appropriate re-prompt | State unchanged; no LLM call, no retry burned |
-| User says "cancel" | Schema `user_intent="wants_to_cancel"` in any extractor | Polite close | Terminal `USER_ABORTED` |
-| Prompt injection attempt | Templated responses + LLM scope confined to extraction | Doesn't disclose stored data | Continues normally; closes via no-progress if user never cooperates |
-| User refuses to provide info (5+ turns) | `no_progress_turns` counter in identity / amount / card collection | State-specific "please call back when ready" | Terminal `TERMINAL_NO_PROGRESS` |
-| Repeated unhandled exception (3+ consecutive `TRANSIENT_ERROR`) | `consecutive_transient_errors` counter in `next()` | "Repeated technical issues — call back in a few minutes" | Terminal `TERMINAL_TRANSIENT_FAILURES` |
-| Client-side card validation failure (Luhn / CVV length / expired) | Pre-API checks in `_handle_card`; increments `card_validation_retries` (separate budget) | Field-specific message; offending field cleared | Re-prompt; terminal after 3 |
-| API-side payment failure (5xx, network error) | tenacity retries inside `process_payment`; on exhaustion increments `payment_api_retries` (separate budget) | "Technical issue, try again in a moment" | Re-prompt; terminal after 3 |
+| Decision | Choice | Why |
+|---|---|---|
+| Control flow | FSM with explicit allow-list, not LLM-routed | LLM routing is unauditable in compliance flows. Every transition checks `ALLOWED_TRANSITIONS`; any unlisted route raises `InvalidTransitionError` so latent bugs surface in tests, not production |
+| LLM scope | Per-state structured extraction only (pydantic v2) | Smaller single-purpose prompts mean higher accuracy and trivial unit testability; templated responses can't leak PII by accident |
+| Extraction backup | Deterministic regex pre-extractor | Reasoning models occasionally drop fields in compound first-turn messages. `core/identity_regex.py` catches labeled patterns; LLM fills gaps |
+| Name matching | Unicode-NFC, **case-sensitive** | Brief explicitly forbids "case-insensitive workarounds for names". Messy lowercase input is normalized in the LLM extractor (rule 2 in the prompt), not at verification time |
+| Verification retry message | Factor-agnostic ("re-check your name, or try Aadhaar/pincode") | Brief only protects DOB/Aadhaar/pincode, not name — but naming the failed field tells an attacker which secondary factor they got right, enabling elimination across 3 retries |
+| DOB confirm-back | Echo **user-provided** date for parser disambiguation; PII filter exempts this one prompt via `allow_dob_readback=True` | Otherwise the customer sees `[REDACTED]` and can't confirm. The stored account DOB is never disclosed |
+| Verification retries | 3 attempts; **fields retained** across retries | A typo in one field is the most common cooperative-user failure. Wiping all fields would force re-confirmation of DOB the user already validated; the counter still bounds brute force |
+| Payment retry budgets | **Two independent counters** (3 each): `card_validation_retries` for user-fixable errors (Luhn / CVV / expiry / API 422), `payment_api_retries` for server-side 5xx | Brief asks us to "distinguish user-fixable errors from terminal failures" — sharing one counter conflates a typo with an outage |
+| Idempotency | `Idempotency-Key` UUID header, regenerated per `_do_payment` entry, reused across tenacity retries | Tenacity may retry a successful-but-lost payment response; the key lets a real processor (Stripe/Razorpay) collapse retries into one logical charge. New card submission = new key (new intent) |
+| Loop-termination bounds | `no_progress_turns` ≥ 5 → `TERMINAL_NO_PROGRESS`; `consecutive_transient_errors` ≥ 3 → `TERMINAL_TRANSIENT_FAILURES` | Cooperative users always advance one field per turn, so the first only fires on refusal / injection. The second closes the "LLM genuinely down" infinite-hiccup hole; resets on any successful turn |
+| Observability | Phoenix OTEL traces + structured JSONL event log (`COBRADOR_EVENT_LOG=`) | Phoenix shows LLM spans; the JSONL carries application intent (FSM transitions, masked API payloads, field-by-field verification comparisons) for offline `jq` debugging |
 
 ---
 
 ## Tradeoffs Accepted
 
-| Tradeoff | Accepted Because |
-|----------|-----------------|
-| No persistence (fresh Agent per conversation) | Scope; Redis session resumption is a known follow-up |
-| English-first | Brief examples are all English; the LLM tolerates light mixing but it's not guaranteed |
-| Sync interface, no streaming | Simplifies state management; streaming can be added at the transport layer without changing FSM |
-| Memory-only state, no Redis | Acceptable for single-process demo; not acceptable in production |
-| GPT-5.4 for extraction | A fine-tuned small model would cut cost ~80%; deferred pending labeled dataset |
-| Card details collected as plain text | Text/voice interface has no secure input channel; production would use tokenization (e.g. Stripe.js) so raw card data never reaches the agent |
-| Card fields retained across turns inside `ConversationState.card` | Partial collection UX. Mitigations: card object dropped immediately after API call, never logged or serialized, offending field cleared on each validation failure, PII filter inspects every outgoing message |
-| Verification retry retains all fields | Better UX for cooperative typo-recovery (real failure mode) at the cost of letting an attacker observe whether the *combination* failed rather than each field individually. The `verification_retries=3` cap still bounds brute force; the agent never says which field was wrong |
-| Payment idempotency key sent as `Idempotency-Key` header | A UUID is generated at every `_do_payment` entry and reused across tenacity-driven retries within that single call. The sandbox ignores it; production processors (Stripe / Razorpay) require it to safely collapse network-blip retries into one logical charge. A *different* card re-entry generates a *new* key because it represents a genuinely new payment intent |
+| Tradeoff | Why accepted |
+|---|---|
+| No conversation persistence (fresh `Agent()` per chat) | Out of scope; Redis-backed session resumption is the documented follow-up |
+| English-first; light Hindi mixing tolerated but not guaranteed | Brief examples are all English; the prompt covers `naam` / `janam` keywords as a courtesy |
+| GPT-5.4 in every extractor | A fine-tuned small model would cut cost ~80% with comparable accuracy on this narrow task; deferred pending a labeled dataset |
+| Card data collected as plaintext in chat | Inherent to the text channel. Mitigations: card dropped from memory immediately after API call; logger masks card to last 4 and CVV to `***`; PII filter inspects every outgoing message |
+| Verification retry retains all fields | Better UX for typo recovery vs giving an attacker the signal that the *combination* failed (rather than each field). The `verification_retries=3` cap still bounds brute force |
+| No payment auto-retry on post-submit network failure | Without an upstream-provided idempotency token we can't safely re-submit; the user sees a clear error and can choose to retry. Our own `Idempotency-Key` covers tenacity-internal retries |
 
 ---
 
-## Assumptions
+## What I Would Improve With More Time
 
-1. The external payment API is authoritative — Cobrador validates card length/checksum, CVV length, expiry, and amount before calling it, but does not independently validate BIN ranges.
-2. "Full name" means the name string stored in the account record; the agent Unicode-NFC normalizes before comparison but does not tokenize or fuzzy-match.
-3. A single conversation handles one payment transaction; multi-payment batching is out of scope.
-4. The agent operates in English; minor Hindi mixing is tolerated by the LLM extractor but is not guaranteed.
-5. Leap-year DOBs (e.g., 1988-02-29 / ACC1004) must be parsed correctly — covered by `python-dateutil` parsing, regex unit tests, and the `leap_year` persona.
-6. Payment retries in the sandbox are safe to attempt on network errors. In production, payment retries require an idempotency key from the upstream processor; the agent therefore does **not** auto-retry the payment API after `process_payment` has been submitted — surfacing a clear error instead.
-7. Echoing the user-provided DOB back for confirmation is **not** considered "exposing account data" per the brief, because the user just typed it. The account's stored DOB is never disclosed.
+1. **Conversation resumption** — Redis-backed session store keyed on caller ID, with cross-session rate-limiting so the per-`Agent()` retry budgets can't be defeated by spinning up fresh sessions.
+2. **Compliance policy as declarative YAML** — FDCPA / RBI rules consumed by a guardrails layer; policy changes wouldn't require code edits.
+3. **Voice front-end** — The FSM core is transport-agnostic; plugging in Twilio + Deepgram reuses `agent.py` unchanged.
+4. **Fine-tuned extraction model** — Replace GPT-5.4 in extractors with a small fine-tuned model (~80% cost reduction at comparable accuracy on this narrow task).
+5. **Production telemetry + regression baselines** — Per-state latency / extraction-confidence dashboards durably stored, plus Tier 3 metrics persisted per release so a `mean_security` regression fails CI.
 
 ---
 
-## What I'd Improve With More Time
+### Assumptions worth naming
 
-1. **Compliance policy file** — FDCPA/RBI rules as declarative YAML consumed by a guardrails layer, so policy changes don't require code edits.
-2. **Production telemetry** — Structured JSON logs + per-state latency dashboards + extraction-confidence tracking. Phoenix tracing covers dev/eval; production needs durable, queryable storage.
-3. **Conversation resumption** — Redis-backed session store keyed on caller ID; same FSM state, durable across disconnects.
-4. **Voice front-end** — The FSM core is transport-agnostic; plugging in Twilio + Deepgram reuses `agent.py` unchanged.
-5. **Fine-tuned extraction model** — Replace GPT-5.4 in extractors with a small fine-tuned model; estimated ~80% cost reduction with equivalent accuracy on this narrow task.
-6. **Idempotent payment retries** — Wire an idempotency key through `process_payment` so the agent can auto-retry post-submit network failures without risking duplicate charges.
-7. **Persona-driven regression coverage** — Each new failure mode discovered in CLI smoke testing becomes a persona (e.g. `name_typo_recovery` was added after a CLI session surfaced field-retention regression). Goal: every shipped fix is pinned by a Tier 3 persona.
+The external payment API is authoritative; we validate client-side first to
+avoid round-trips. "Full name" is the stored string, Unicode-NFC normalized,
+never tokenized or fuzzy-matched. One payment per conversation. Echoing
+**user-provided** DOB back for confirmation is not "exposing account data"
+per the brief — the user just typed it; the stored value is never disclosed.
