@@ -502,6 +502,52 @@ def test_payment_invalid_card_error(mock_ec, mock_ea, mock_edc, mock_ei, mock_ei
     r = msg(agent.next("card details"))
     assert agent._conv.state == State.AWAITING_CARD  # retryable — stays in card state
     assert "card" in r.lower() or "invalid" in r.lower()
+    # Bug fix pin: API-side 422 invalid_card must increment
+    # card_validation_retries (user-fixable), not payment_api_retries.
+    # Previously these shared one counter; brief asks us to distinguish.
+    assert agent._conv.card_validation_retries == 1
+    assert agent._conv.payment_api_retries == 0
+    # Bug fix pin: API-side 422 invalid_card must clear ONLY the card
+    # number (the offending field), preserving cvv / expiry / cardholder
+    # so the user doesn't re-type everything. Mirrors the client-side
+    # _handle_card_validation_error behavior.
+    assert agent._conv.card is not None
+    assert agent._conv.card.card_number == ""       # cleared
+    assert agent._conv.card.cvv == "123"            # preserved
+    assert agent._conv.card.expiry_month == 12      # preserved
+    assert agent._conv.card.expiry_year == 2027     # preserved
+    assert agent._conv.card.cardholder_name == "Nithin Jain"  # preserved
+
+
+# ── Scenario 9b: API 422 invalid_cvv preserves non-offending fields ──────────
+
+@patch("handlers.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("handlers.process_payment", return_value=mock_payment_failure("invalid_cvv"))
+@patch("handlers.extract_account_id", side_effect=smart_account_id)
+@patch("handlers.extract_identity", side_effect=[
+    mock_identity(name="Nithin Jain"),
+    mock_identity(dob=date(1990, 5, 14)),
+])
+@patch("handlers.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
+@patch("handlers.extract_amount", return_value=mock_amount(Decimal("500.00")))
+@patch("handlers.extract_card", return_value=mock_card(
+    number="4532015112830366", cvv="999", month=12, year=2027, cardholder="Nithin Jain"
+))
+def test_api_invalid_cvv_clears_only_cvv(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_pp, mock_la):
+    """API-side 422 invalid_cvv should clear ONLY the CVV, preserving the
+    other three card fields. Prior behavior wiped all four fields,
+    forcing the user to re-type their entire card after a CVV typo."""
+    agent = Agent()
+    agent.next("hi"); agent.next("ACC1001"); agent.next("Nithin Jain")
+    agent.next("DOB"); agent.next("yes"); agent.next("500")
+    agent.next("card details")
+    assert agent._conv.state == State.AWAITING_CARD
+    assert agent._conv.card is not None
+    assert agent._conv.card.card_number == "4532015112830366"  # preserved
+    assert agent._conv.card.cvv == ""                          # cleared
+    assert agent._conv.card.expiry_month == 12                 # preserved
+    assert agent._conv.card.expiry_year == 2027                # preserved
+    assert agent._conv.card.cardholder_name == "Nithin Jain"   # preserved
 
 
 # ── Scenario 10: Leap year ACC1004 ───────────────────────────────────────────

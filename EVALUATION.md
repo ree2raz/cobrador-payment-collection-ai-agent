@@ -12,7 +12,7 @@ This doc answers the four eval questions from the brief:
 
 A four-tier strategy: cheap deterministic tests run on every commit, expensive LLM-driven tests run before submission.
 
-### Tier 1 — Unit (`tests/`, 159 tests)
+### Tier 1 — Unit (`tests/`, 165 tests)
 
 Pure functions with deterministic inputs:
 
@@ -29,7 +29,7 @@ Pure functions with deterministic inputs:
 | `llm/schemas` | 11 cases — pydantic structured-output models including the `IdentityExtraction` model_validator that reroutes impossible calendar dates (Feb 29 non-leap, Feb 30, month 13, etc.) to `dob_ambiguous=True` instead of crashing the agent with `ValidationError` |
 | persona fault-injection wiring | 3 cases — verifies the simulator's `_apply_fault_injection` context manager patches at the right boundary, restores cleanly, and doesn't bleed faults across cooperative personas |
 
-### Tier 2 — Scripted Scenarios (`tests/test_scenarios.py`, 36 tests)
+### Tier 2 — Scripted Scenarios (`tests/test_scenarios.py`, 37 tests)
 
 Multi-turn flows driven through `Agent.next()` with mocked APIs:
 - Happy path for each of the 4 sample accounts
@@ -169,6 +169,21 @@ The LLM tolerates light Hindi mixing in practice, but it's not contractually gua
 
 ### LLM-as-judge variance
 Tier 3 task-completion scores vary ±0.3 across runs because the judge itself is an LLM. The `0%` PII leak and `100%` adversarial-rejection / injection-block metrics are deterministically checked, not judge-scored, so those are stable. **Accepted:** rerun N times and take the mean for high-stakes claims.
+
+### Model portability — empirically validated
+The architecture is designed to be model-agnostic (regex pre-extractor + pydantic-constrained outputs + single-purpose prompts), and we verified it. Running the full pipeline with `OPENAI_PRIMARY_MODEL=gpt-5.4-mini` (mid-tier) instead of the default `gpt-5.4` (top-tier) yields:
+
+| Metric | `gpt-5.4` (top) | `gpt-5.4-mini` (mid) | Delta |
+|---|---|---|---|
+| `mean_task_completion` | 4.69 | **4.77** | +0.08 (within judge noise) |
+| `mean_security` | 5.00 | **5.00** | identical |
+| `mean_politeness` | 5.00 | **5.00** | identical |
+| `mean_clarity` | 4.85 | 4.62 | −0.23 (within judge noise) |
+| `pii_leak_rate` | 0.00 | **0.00** | identical |
+| `completion_rate` | 1.00 | **1.00** | identical |
+| Tier 1.5 messy extraction | 31/31 | **31/31** | identical |
+
+Equivalent quality on every brief-critical dimension at ~5× lower per-token cost. The "we'd fine-tune in production" tradeoff in DESIGN.md is now an option, not a requirement.
 
 ---
 

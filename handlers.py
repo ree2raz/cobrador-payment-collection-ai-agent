@@ -732,10 +732,13 @@ class _CollectionHandlers:
             logger.exception("process_payment unexpected error: %s", exc)
             result = PaymentResult(success=False, error_code="server_error")
 
-        # Drop card from memory immediately after API call
-        conv.clear_card()
+        # Snapshot the submitted card so we can selectively clear fields
+        # on user-fixable API errors. Then defer the global clear_card()
+        # to the specific branches below.
+        submitted_card = conv.card
 
         if result.success:
+            conv.clear_card()  # brief: drop after API success
             txn_id = result.transaction_id or "N/A"
             conv.transaction_id = txn_id
             conv.transition(State.CONFIRM_AND_CLOSE, trigger="payment_success")
@@ -749,21 +752,40 @@ class _CollectionHandlers:
             # validation budget (a typo, just caught upstream from us).
             # API 5xx exhausted / server_error → counts against the API budget.
             if error_code in _USER_FIXABLE_API_ERRORS:
+                # Mirror _handle_card_validation_error: clear ONLY the
+                # offending field so the user re-enters one thing, not
+                # the entire card. Previously clear_card() ran first,
+                # wiping all four fields and forcing full re-entry —
+                # inconsistent with the client-side path.
+                conv.card = CardDetails(
+                    card_number="" if error_code == "invalid_card" else submitted_card.card_number,
+                    cvv="" if error_code == "invalid_cvv" else submitted_card.cvv,
+                    expiry_month=0 if error_code == "invalid_expiry" else submitted_card.expiry_month,
+                    expiry_year=0 if error_code == "invalid_expiry" else submitted_card.expiry_year,
+                    cardholder_name=submitted_card.cardholder_name,
+                )
                 conv.card_validation_retries += 1
                 limit = MAX_CARD_VALIDATION_RETRIES
                 counter = conv.card_validation_retries
                 trigger_max = "max_card_validation_retries"
             else:
+                # server_error: ambiguous what the API saw. Safest to
+                # drop all card data and let the user re-enter.
+                conv.clear_card()
                 conv.payment_api_retries += 1
                 limit = MAX_PAYMENT_API_RETRIES
                 counter = conv.payment_api_retries
                 trigger_max = "max_payment_api_retries"
             if counter >= limit:
+                # Exhausted budget — drop card data on the way out.
+                conv.clear_card()
                 conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger=trigger_max)
                 return R.PAYMENT_FAILED_TERMINAL
             conv.transition(State.AWAITING_CARD, trigger="payment_retryable_error")
             return R.payment_error_message(error_code)
 
-        # Terminal payment errors (e.g. insufficient_balance post-API)
+        # Terminal payment errors (e.g. insufficient_balance post-API).
+        # Drop card on the way out — no more attempts in this session.
+        conv.clear_card()
         conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger=f"payment_terminal_{error_code}")
         return R.payment_error_message(error_code)

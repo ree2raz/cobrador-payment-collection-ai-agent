@@ -2,7 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
 
 # Cancel an in-progress run when a new commit lands on the same ref
 # (e.g. force-push during a PR). Saves CI minutes.

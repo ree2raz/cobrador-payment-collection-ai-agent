@@ -65,6 +65,24 @@ class TestValidateExpiry:
     def test_month_zero(self):
         assert validate_expiry(0, 2027) is False
 
+    def test_current_month_still_valid(self):
+        # Cards remain valid through the LAST day of their expiry month.
+        # A card with expiry = this month/this year must pass validation
+        # today. Guards against an off-by-one refactor that would silently
+        # reject every "expires this month" card.
+        from datetime import date
+        today = date.today()
+        assert validate_expiry(today.month, today.year) is True
+
+    def test_last_month_invalid(self):
+        # A card whose month/year is strictly in the past must fail.
+        from datetime import date
+        today = date.today()
+        # If today is January, last month is December of last year.
+        last_month = today.month - 1 if today.month > 1 else 12
+        last_year = today.year if today.month > 1 else today.year - 1
+        assert validate_expiry(last_month, last_year) is False
+
 
 class TestValidateAmount:
     def test_valid_partial(self):

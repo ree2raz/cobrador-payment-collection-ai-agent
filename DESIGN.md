@@ -68,7 +68,7 @@ failure states (`ACCOUNT_NOT_FOUND`, `VERIFICATION_FAILED`,
 |---|---|
 | No conversation persistence (fresh `Agent()` per chat) | Out of scope; Redis-backed session resumption is the documented follow-up |
 | English-first; light Hindi mixing tolerated but not guaranteed | Brief examples are all English; the prompt covers `naam` / `janam` keywords as a courtesy |
-| GPT-5.4 in every extractor | A fine-tuned small model would cut cost ~80% with comparable accuracy on this narrow task; deferred pending a labeled dataset |
+| GPT-5.4 default for extractors | **Verified model-portable**: `OPENAI_PRIMARY_MODEL=gpt-5.4-mini` runs at parity quality across the full pipeline (Tier 3: 4.77/5.0 task, 5.0/5.0 security, 100% completion, 0% PII leak; Tier 1.5: 31/31 messy cases). Three architectural choices make this work — regex pre-extractor catches labeled patterns before the LLM, pydantic structured outputs constrain output space, single-purpose prompts give narrow context. A fine-tuned small model would shave further; not needed for the brief's accuracy bar |
 | Card data collected as plaintext in chat | Inherent to the text channel. Mitigations: card dropped from memory immediately after API call; logger masks card to last 4 and CVV to `***`; PII filter inspects every outgoing message |
 | Verification retry retains all fields | Better UX for typo recovery vs giving an attacker the signal that the *combination* failed (rather than each field). The `verification_retries=3` cap still bounds brute force |
 | No payment auto-retry on post-submit network failure | Without an upstream-provided idempotency token we can't safely re-submit; the user sees a clear error and can choose to retry. Our own `Idempotency-Key` covers tenacity-internal retries |

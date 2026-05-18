@@ -69,7 +69,9 @@ def extract_identity(user_input: str, already_collected: dict) -> IdentityExtrac
 
 
 def extract_dob_confirmation(user_input: str, presented_date: date) -> DobConfirmation:
-    date_str = presented_date.strftime("%-d %B %Y")  # e.g. "14 May 1990"
+    # f-string + zero-padded %B avoids the non-portable %-d format
+    # (which is glibc-only — crashes on macOS BSD strftime and Windows).
+    date_str = f"{presented_date.day} {presented_date.strftime('%B %Y')}"  # e.g. "14 May 1990"
     prompt = DOB_CONFIRMATION.format(
         user_input=user_input,
         presented_date=date_str,

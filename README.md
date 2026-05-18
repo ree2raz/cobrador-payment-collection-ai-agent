@@ -17,7 +17,7 @@ uv sync
 # 2. Set the OpenAI key (used only by the agent's extractors)
 export OPENAI_API_KEY=sk-...
 
-# 3. Sanity check — runs all 195 deterministic tests in ~1s, no API calls
+# 3. Sanity check — runs all 202 deterministic tests in ~1s, no API calls
 uv run pytest -m "not integration"
 ```
 
@@ -40,6 +40,7 @@ response = agent.next("Nithin Jain")
 - `agent._conv.state` exposes a `State` enum (from `core.state_machine`) for terminal-state detection. The `TERMINAL_STATES` set in the same module is the canonical "conversation is over" check.
 - Deterministic: FSM transitions are deterministic by construction; LLM extractors run at `temperature=0.0` with pydantic-validated structured outputs.
 - No external setup between turns. No file writes, no network state. Phoenix tracing and the JSONL event log are opt-in via env vars and don't affect agent behavior.
+- **Model portable** — every test passes with `OPENAI_PRIMARY_MODEL=gpt-5.4-mini` at parity quality on every brief-critical metric (verified end-to-end with both top and mid-tier models). Use whatever your eval budget allows.
 
 **Test accounts** (lookup-account API responds with these in the sandbox):
 
@@ -98,7 +99,7 @@ cobrador/
 │   ├── judge.py           # LLM-as-judge scoring
 │   ├── messy_cases.py     # 31 production-style messy extraction test cases
 │   └── run_eval.py        # Three-tier eval runner CLI
-└── tests/                 # 195 deterministic tests passing + 31 live LLM tests skipped offline
+└── tests/                 # 202 deterministic tests passing + 31 live LLM tests skipped offline
     └── test_extraction_messy.py  # Tier 1.5: live LLM messy extraction tests
 ```
 
@@ -145,17 +146,17 @@ PHOENIX=1 uv run python -m eval.run_eval --tier 3
 | Suite | Tests | Result |
 |-------|-------|--------|
 | Normalization helpers | 14 | ✅ 100% |
-| Validator correctness (Luhn, date, CVV, amount) | 31 | ✅ 100% |
+| Validator correctness (Luhn, date, CVV, amount, current-month expiry) | 33 | ✅ 100% |
 | Verification truth table + account-specific cases | 23 | ✅ 100% |
 | State machine transition allow-list | 13 | ✅ 100% |
 | PII filter — DOB/Aadhaar/pincode variants | 17 | ✅ 100% |
 | API payload/retry/idempotency-key behavior | 4 | ✅ 100% |
 | Identity-regex deterministic pre-extractor | 24 | ✅ 100% |
 | Event-log masking + event-constant uniqueness | 19 | ✅ 100% |
-| Pydantic schema validators (invalid-date rerouting, name trim, etc.) | 11 | ✅ 100% |
+| Pydantic schema validators (invalid-date rerouting, empty-string DOB, name trim, portable date formatting) | 14 | ✅ 100% |
 | Persona fault-injection wiring | 3 | ✅ 100% |
-| Scripted multi-turn scenarios (all 4 accounts + failure paths + no-progress + retry-budget splits + transient-error termination + API outage + invalid calendar date) | 36 | ✅ 100% |
-| **Total** | **195** | **✅ 195/195** |
+| Scripted multi-turn scenarios (all 4 accounts + failure paths + no-progress + retry-budget splits + transient-error termination + API outage + invalid calendar date + API-422 surgical field clearing) | 37 | ✅ 100% |
+| **Total** | **202** | **✅ 202/202** |
 
 ### Tier 1.5 — Messy Extraction Accuracy
 

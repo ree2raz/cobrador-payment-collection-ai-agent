@@ -53,22 +53,31 @@ class IdentityExtraction(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def reroute_invalid_dob_as_ambiguous(cls, data: object) -> object:
-        """Catch dates that are syntactically ISO but don't exist on the
-        calendar (e.g. '1998-02-29' — 1998 isn't a leap year, so Feb 29
-        doesn't exist). Pydantic v2's strict date parser raises
-        ValidationError on these, which would propagate up as an
-        unhandled exception and surface to the user as a generic 'brief
-        technical hiccup' instead of the appropriate 'please share a
-        valid date' prompt. We re-route to dob_ambiguous=True so the
-        FSM handles it gracefully via the existing ambiguous-DOB path."""
+        """Two failure modes on the raw dob field:
+
+        1. Empty string ("" / "   "). The LLM sometimes returns dob=""
+           when it isn't sure. Pydantic's date parser raises
+           ValidationError, which discards the ENTIRE extraction (name,
+           aadhaar, pincode lost too). Treat empty as no DOB provided.
+
+        2. Syntactically-ISO but calendrically-invalid (e.g. '1998-02-29'
+           — 1998 isn't a leap year, so Feb 29 doesn't exist). Same
+           ValidationError → same total-extraction loss. Reroute to
+           dob_ambiguous=True so the FSM handles it gracefully via the
+           existing ambiguous-DOB path.
+        """
         if not isinstance(data, dict):
             return data
         raw_dob = data.get("dob")
-        if isinstance(raw_dob, str) and raw_dob:
-            try:
-                date.fromisoformat(raw_dob)
-            except (ValueError, TypeError):
-                data = {**data, "dob": None, "dob_ambiguous": True}
+        if isinstance(raw_dob, str):
+            if not raw_dob.strip():
+                # Empty / whitespace-only → no DOB stated
+                data = {**data, "dob": None}
+            else:
+                try:
+                    date.fromisoformat(raw_dob)
+                except (ValueError, TypeError):
+                    data = {**data, "dob": None, "dob_ambiguous": True}
         return data
 
     @field_validator("full_name", mode="before")
@@ -138,7 +147,13 @@ class CardExtraction(BaseModel):
         description="CVV digits only. Null if not stated.",
     )
     expiry_month: Optional[int] = Field(None, ge=1, le=12)
-    expiry_year: Optional[int] = Field(None, ge=2024, le=2050)
+    # No static lower bound — `ge=2024` would silently reject otherwise-valid
+    # cards from older years and goes stale within months. The "card is past
+    # its expiry" check lives in core.validators.validate_expiry, which
+    # compares against date.today() and produces a clear user-facing message.
+    # Upper bound keeps gross hallucinations out (no card ships with 30+
+    # year validity).
+    expiry_year: Optional[int] = Field(None, le=2099)
     cardholder_name: Optional[str] = Field(None)
     user_intent: Literal["providing_card", "asking_question", "wants_to_cancel"]
 
