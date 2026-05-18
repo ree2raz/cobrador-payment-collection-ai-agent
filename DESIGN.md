@@ -85,10 +85,33 @@ failure states (`ACCOUNT_NOT_FOUND`, `VERIFICATION_FAILED`,
 
 ---
 
-### Assumptions worth naming
+### Assumptions & ambiguity resolutions
 
-The external payment API is authoritative; we validate client-side first to
-avoid round-trips. "Full name" is the stored string, Unicode-NFC normalized,
-never tokenized or fuzzy-matched. One payment per conversation. Echoing
-**user-provided** DOB back for confirmation is not "exposing account data"
-per the brief — the user just typed it; the stored value is never disclosed.
+The brief invited us to document how we resolved ambiguity. Six calls:
+
+1. **"Sensible retry limit"** → 3 attempts each for account-lookup,
+   verification, card-validation, and payment-API. Industry-standard;
+   bounded enough to stop brute force, generous enough for typos.
+2. **"Strict matching, no fuzzy"** → Unicode-NFC + case-sensitive. Messy
+   lowercase / all-caps is handled in the LLM extractor (Title-Case at
+   extraction time), keeping the verification layer provably strict per
+   the brief's literal text.
+3. **"Reject incorrect attempts clearly" vs "Do not expose account data"** →
+   Factor-agnostic retry message. Brief allows naming `name` (not on
+   protected list), but doing so tells an attacker which secondary
+   factor they got right. Stay factor-agnostic.
+4. **Two-digit DOB years** → Always 19XX (a customer's birth year cannot
+   be in the future). Card expiry years explicitly *not* subject to this
+   rule (27 → 2027).
+5. **Zero balance (ACC1003)** → Greet, verify, announce, auto-close.
+   Don't skip verification just because nothing's owed — identity might
+   still be sensitive.
+6. **"Distinguish user-fixable from terminal failures"** → Two retry
+   budgets: `card_validation_retries` for Luhn/CVV/expiry/422,
+   `payment_api_retries` for 5xx. Each capped at 3; budgets don't bleed.
+
+Other assumptions: the external API is authoritative (we validate
+client-side first); "full name" is the stored string, NFC normalized,
+never tokenized; one payment per conversation; echoing user-provided
+DOB back for confirmation is not "exposing account data" — the user
+just typed it.

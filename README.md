@@ -17,7 +17,7 @@ uv sync
 # 2. Set the OpenAI key (used only by the agent's extractors)
 export OPENAI_API_KEY=sk-...
 
-# 3. Sanity check — runs all 183 deterministic tests in ~1s, no API calls
+# 3. Sanity check — runs all 195 deterministic tests in ~1s, no API calls
 uv run pytest -m "not integration"
 ```
 
@@ -98,7 +98,7 @@ cobrador/
 │   ├── judge.py           # LLM-as-judge scoring
 │   ├── messy_cases.py     # 31 production-style messy extraction test cases
 │   └── run_eval.py        # Three-tier eval runner CLI
-└── tests/                 # 183 deterministic tests passing + 23 live LLM tests skipped offline
+└── tests/                 # 195 deterministic tests passing + 31 live LLM tests skipped offline
     └── test_extraction_messy.py  # Tier 1.5: live LLM messy extraction tests
 ```
 
@@ -152,9 +152,10 @@ PHOENIX=1 uv run python -m eval.run_eval --tier 3
 | API payload/retry/idempotency-key behavior | 4 | ✅ 100% |
 | Identity-regex deterministic pre-extractor | 24 | ✅ 100% |
 | Event-log masking + event-constant uniqueness | 19 | ✅ 100% |
+| Pydantic schema validators (invalid-date rerouting, name trim, etc.) | 11 | ✅ 100% |
 | Persona fault-injection wiring | 3 | ✅ 100% |
-| Scripted multi-turn scenarios (all 4 accounts + failure paths + no-progress + retry-budget splits + transient-error termination + API outage) | 35 | ✅ 100% |
-| **Total** | **183** | **✅ 183/183** |
+| Scripted multi-turn scenarios (all 4 accounts + failure paths + no-progress + retry-budget splits + transient-error termination + API outage + invalid calendar date) | 36 | ✅ 100% |
+| **Total** | **195** | **✅ 195/195** |
 
 ### Tier 1.5 — Messy Extraction Accuracy
 

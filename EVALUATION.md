@@ -12,7 +12,7 @@ This doc answers the four eval questions from the brief:
 
 A four-tier strategy: cheap deterministic tests run on every commit, expensive LLM-driven tests run before submission.
 
-### Tier 1 — Unit (`tests/`, 145 tests)
+### Tier 1 — Unit (`tests/`, 159 tests)
 
 Pure functions with deterministic inputs:
 
@@ -25,9 +25,11 @@ Pure functions with deterministic inputs:
 | `output/pii_filter` | DOB / Aadhaar / pincode redaction across 17 phrasings + `allow_dob_readback` exemption |
 | `tools/payment_api` | Payload shape, tenacity retry on 5xx, 404 → `account_not_found`, 422 → error_code, `Idempotency-Key` header reused across tenacity retries, omitted when not provided |
 | `core/identity_regex` | 21 high-signal cases — one canonical phrasing per regex branch + false-positive guards (trimmed from 40 to keep signal density; near-duplicate phrasings hitting the same branch added no information) |
-| `event_log` | 22 cases — card-number masking (12+ digit sequences, spaced, hyphenated, short, empty), CVV masking (numeric + verbal digits), end-to-end compound scrubs, event-constant uniqueness. Pins the "no raw card data in logs" brief rule against regression |
+| `event_log` | 19 cases — card-number masking (12+ digit sequences, spaced, hyphenated, short, empty), CVV masking (numeric + verbal digits), end-to-end compound scrubs, event-constant uniqueness. Pins the "no raw card data in logs" brief rule against regression |
+| `llm/schemas` | 11 cases — pydantic structured-output models including the `IdentityExtraction` model_validator that reroutes impossible calendar dates (Feb 29 non-leap, Feb 30, month 13, etc.) to `dob_ambiguous=True` instead of crashing the agent with `ValidationError` |
+| persona fault-injection wiring | 3 cases — verifies the simulator's `_apply_fault_injection` context manager patches at the right boundary, restores cleanly, and doesn't bleed faults across cooperative personas |
 
-### Tier 2 — Scripted Scenarios (`tests/test_scenarios.py`, 34 tests)
+### Tier 2 — Scripted Scenarios (`tests/test_scenarios.py`, 36 tests)
 
 Multi-turn flows driven through `Agent.next()` with mocked APIs:
 - Happy path for each of the 4 sample accounts
@@ -44,6 +46,7 @@ Multi-turn flows driven through `Agent.next()` with mocked APIs:
 - Payment idempotency key wiring
 - Independent payment retry budgets — client-side validation vs API-side errors
 - Consecutive-transient-error termination (`TERMINAL_TRANSIENT_FAILURES`) when LLM is down
+- Invalid calendar date (`1998-02-29`) prompts the user instead of crashing
 
 ### Tier 1.5 — Messy Extraction Accuracy (`eval/messy_cases.py`, 31 live cases)
 
