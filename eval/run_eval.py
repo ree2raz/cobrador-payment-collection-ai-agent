@@ -19,6 +19,7 @@ import argparse
 import json
 import logging
 import os
+import statistics
 import subprocess
 import sys
 import traceback
@@ -127,10 +128,15 @@ def run_messy() -> dict:
     return output
 
 
-def run_tier3(persona_filter: list[str] | None = None) -> dict:
-    """Run persona simulation + LLM-as-judge."""
+def run_tier3(persona_filter: list[str] | None = None, repeat: int = 1) -> dict:
+    """Run persona simulation + LLM-as-judge.
+
+    If repeat > 1, runs every persona N times and reports each metric as
+    mean ± stddev across runs (single-run reports just the mean with
+    stddev=0). LLM-as-judge variance is real — a single run can shift
+    task_completion by ±0.3 — so high-stakes claims need N≥3."""
     print("\n" + "=" * 60)
-    print("TIER 3: Persona Simulation")
+    print(f"TIER 3: Persona Simulation ({repeat} run{'s' if repeat > 1 else ''})")
     print("=" * 60)
 
     personas = PERSONAS
@@ -143,53 +149,69 @@ def run_tier3(persona_filter: list[str] | None = None) -> dict:
             print(f"Valid names: {', '.join(p.name for p in PERSONAS)}")
         print(f"Running {len(personas)} persona(s): {', '.join(p.name for p in personas)}")
 
+    # Each run produces one list of rows. Aggregate across runs at the end.
+    per_run_rows: list[list[dict]] = []
+    # Flat list for single-run reporting + backward compatibility
     all_scores = []
     summary_rows = []
 
-    for persona in personas:
-        print(f"\n--- Persona: {persona.name} ---")
-        try:
-            result = simulate(persona)
-            score = judge_conversation(result, persona.goal, persona.expected_outcome)
+    for run_idx in range(repeat):
+        if repeat > 1:
+            print(f"\n{'━' * 60}\n  RUN {run_idx + 1} of {repeat}\n{'━' * 60}")
+        run_rows: list[dict] = []
 
-            row = {
-                "persona": persona.name,
-                "final_state": result.final_state,
-                "turns": len(result.turns),
-                "completed": result.completed,
-                "pii_leaked": result.pii_leaked,
-                "pii_leak_details": result.pii_leak_details,
-                "task_completion": score.task_completion,
-                "politeness": score.politeness,
-                "clarity": score.clarity,
-                "security": score.security,
-                "efficiency": score.efficiency,
-                "issues": score.issues,
-                "notes": score.overall_notes,
-                "transcript": [
-                    {"user": t.user, "agent": t.agent} for t in result.turns
-                ],
-            }
-            all_scores.append(row)
-            summary_rows.append(row)
+        for persona in personas:
+            print(f"\n--- Persona: {persona.name} ---")
+            try:
+                result = simulate(persona)
+                score = judge_conversation(result, persona.goal, persona.expected_outcome)
 
-            print(f"  Final state:    {result.final_state}")
-            print(f"  Turns:          {len(result.turns)}")
-            print(f"  PII leaked:     {result.pii_leaked}")
-            print(f"  Scores:  task={score.task_completion} polite={score.politeness} "
-                  f"clarity={score.clarity} security={score.security} eff={score.efficiency}")
-            if score.issues:
-                print(f"  Issues:  {score.issues}")
+                row = {
+                    "run": run_idx + 1,
+                    "persona": persona.name,
+                    "final_state": result.final_state,
+                    "turns": len(result.turns),
+                    "completed": result.completed,
+                    "pii_leaked": result.pii_leaked,
+                    "pii_leak_details": result.pii_leak_details,
+                    "task_completion": score.task_completion,
+                    "politeness": score.politeness,
+                    "clarity": score.clarity,
+                    "security": score.security,
+                    "efficiency": score.efficiency,
+                    "issues": score.issues,
+                    "notes": score.overall_notes,
+                    "transcript": [
+                        {"user": t.user, "agent": t.agent} for t in result.turns
+                    ],
+                }
+                all_scores.append(row)
+                summary_rows.append(row)
+                run_rows.append(row)
 
-        except Exception as e:
-            tb = traceback.format_exc()
-            logger.error("Persona %s failed: %s\n%s", persona.name, e, tb)
-            summary_rows.append({"persona": persona.name, "error": str(e) or repr(e), "traceback": tb})
+                print(f"  Final state:    {result.final_state}")
+                print(f"  Turns:          {len(result.turns)}")
+                print(f"  PII leaked:     {result.pii_leaked}")
+                print(f"  Scores:  task={score.task_completion} polite={score.politeness} "
+                      f"clarity={score.clarity} security={score.security} eff={score.efficiency}")
+                if score.issues:
+                    print(f"  Issues:  {score.issues}")
 
-    # Aggregate metrics
-    scored = [r for r in all_scores if "task_completion" in r]
-    if scored:
-        metrics = {
+            except Exception as e:
+                tb = traceback.format_exc()
+                logger.error("Persona %s failed: %s\n%s", persona.name, e, tb)
+                summary_rows.append({"run": run_idx + 1, "persona": persona.name, "error": str(e) or repr(e), "traceback": tb})
+
+        per_run_rows.append(run_rows)
+
+    # Aggregate metrics. With repeat=1 we report a single point; with N>1
+    # we compute each metric per run, then mean ± stddev across runs —
+    # this gives an honest read on LLM-judge variance.
+    def _run_metrics(rows: list[dict]) -> dict:
+        scored = [r for r in rows if "task_completion" in r]
+        if not scored:
+            return {}
+        return {
             "mean_task_completion": sum(r["task_completion"] for r in scored) / len(scored),
             "mean_security": sum(r["security"] for r in scored) / len(scored),
             "mean_politeness": sum(r["politeness"] for r in scored) / len(scored),
@@ -199,15 +221,44 @@ def run_tier3(persona_filter: list[str] | None = None) -> dict:
             "mean_turns": sum(r["turns"] for r in scored) / len(scored),
         }
 
+    per_run_metrics = [_run_metrics(rows) for rows in per_run_rows]
+    per_run_metrics = [m for m in per_run_metrics if m]
+
+    if per_run_metrics:
+        # mean + stddev across runs (stddev=0 when N=1)
+        metric_names = list(per_run_metrics[0].keys())
+        metrics = {}
+        for name in metric_names:
+            values = [m[name] for m in per_run_metrics]
+            metrics[name] = {
+                "mean": statistics.mean(values),
+                "stddev": statistics.pstdev(values) if len(values) > 1 else 0.0,
+                "values": values,
+            }
+
         print("\n" + "=" * 60)
-        print("AGGREGATE METRICS")
+        print(f"AGGREGATE METRICS  (n={len(per_run_metrics)} run{'s' if len(per_run_metrics) > 1 else ''})")
         print("=" * 60)
         for k, v in metrics.items():
-            print(f"  {k}: {v:.2f}")
+            if v["stddev"] > 0:
+                print(f"  {k}: {v['mean']:.2f} ± {v['stddev']:.2f}  (values: {[round(x, 2) for x in v['values']]})")
+            else:
+                print(f"  {k}: {v['mean']:.2f}")
+
+        # Provide a flat top-level summary for back-compat with older
+        # dashboards/scripts that read the "metrics" dict directly.
+        metrics_flat = {k: v["mean"] for k, v in metrics.items()}
     else:
         metrics = {}
+        metrics_flat = {}
 
-    output = {"timestamp": datetime.now(timezone.utc).isoformat(), "metrics": metrics, "rows": summary_rows}
+    output = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "runs": repeat,
+        "metrics": metrics_flat,            # backward compat (flat means)
+        "metrics_with_variance": metrics,    # full mean / stddev / per-run values
+        "rows": summary_rows,                # every row across all runs
+    }
 
     RESULTS_DIR.mkdir(exist_ok=True)
     out_path = RESULTS_DIR / f"tier3_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
@@ -232,6 +283,16 @@ def main() -> None:
         "--messy",
         action="store_true",
         help="Run messy extraction accuracy tests (21 production-style inputs).",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Run Tier 3 N times and report each metric as mean ± stddev. "
+             "LLM-judge variance is real (±0.3 on task_completion); N=3-5 "
+             "gives a more reliable read for high-stakes claims. "
+             "Cost scales linearly with N.",
     )
     args = parser.parse_args()
 
@@ -258,7 +319,7 @@ def main() -> None:
             sys.exit(1)
 
     if args.tier in ("3", "all"):
-        run_tier3(persona_filter=args.personas)
+        run_tier3(persona_filter=args.personas, repeat=args.repeat)
 
     if args.messy:
         run_messy()

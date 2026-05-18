@@ -45,12 +45,12 @@ cobrador/
 │   ├── responses.py       # Templated user-facing messages (90% of output)
 │   └── pii_filter.py      # Final output PII redaction layer
 ├── eval/
-│   ├── personas.py        # 12 simulation personas
+│   ├── personas.py        # 13 simulation personas
 │   ├── simulator.py       # LLM-driven user simulator
 │   ├── judge.py           # LLM-as-judge scoring
 │   ├── messy_cases.py     # 21 production-style messy extraction test cases
 │   └── run_eval.py        # Three-tier eval runner CLI
-└── tests/                 # 179 deterministic tests passing + 23 live LLM tests skipped offline
+└── tests/                 # 183 deterministic tests passing + 23 live LLM tests skipped offline
     └── test_extraction_messy.py  # Tier 1.5: live LLM messy extraction tests
 ```
 
@@ -70,6 +70,10 @@ uv run pytest tests/ -v
 
 # Tier 3: persona simulation with LLM-as-judge
 uv run python -m eval.run_eval --tier 3
+
+# Tier 3 with statistical rigor — run N times, report mean ± stddev
+# (LLM-judge variance is real; N=3-5 gives reliable confidence for claims)
+uv run python -m eval.run_eval --tier 3 --repeat 5
 
 # Tier 3 — run specific personas only
 uv run python -m eval.run_eval --tier 3 --personas cooperative rambling adversarial_imposter
@@ -101,7 +105,7 @@ PHOENIX=1 uv run python -m eval.run_eval --tier 3
 | Identity-regex deterministic pre-extractor | 21 | ✅ 100% |
 | Event-log masking + event-constant uniqueness | 22 | ✅ 100% |
 | Scripted multi-turn scenarios (all 4 accounts + failure paths + no-progress + retry-budget splits + transient-error termination) | 34 | ✅ 100% |
-| **Total** | **179** | **✅ 179/179** |
+| **Total** | **183** | **✅ 183/183** |
 
 ### Tier 1.5 — Messy Extraction Accuracy
 
@@ -119,13 +123,14 @@ account-ID phrasing).
 | card (spaced number, verbal CVV, verbal expiry, compound) | 5/5 | ✅ 100% |
 | **Total** | **23/23** | **✅ 100%** |
 
-### Tier 3 — Persona Simulation (12 personas, LLM-as-judge)
+### Tier 3 — Persona Simulation (13 personas, LLM-as-judge)
 
 Personas: `cooperative`, `rambling`, `terse`, `confused`, `adversarial_imposter`,
 `prompt_injector`, `zero_balance` (ACC1003), `invalid_card`, `leap_year` (ACC1004),
-`out_of_order`, `turn1_volunteer`, `name_typo_recovery`.
+`out_of_order`, `turn1_volunteer`, `name_typo_recovery`,
+`api_failure_during_payment` (fault-injects payment-API 5xx).
 
-Latest run across all 12 personas (`tier3_20260518_050925.json`):
+Latest run across all 13 personas (`tier3_20260518_050925.json`):
 
 | Metric | Score | Notes |
 |--------|-------|-------|

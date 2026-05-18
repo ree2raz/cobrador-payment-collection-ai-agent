@@ -1,5 +1,6 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -9,6 +10,12 @@ class Persona:
     goal: str
     expected_outcome: str
     account_id: str = "ACC1001"
+    # Optional fault injection for the persona's run. Keys recognized:
+    #   "payment_api": "server_error"  → process_payment always returns
+    #       error_code=server_error so the agent exercises its API-side
+    #       retry path (payment_api_retries → TERMINAL_PAYMENT_FAILED).
+    # None / empty means no faults injected.
+    fault_injection: Optional[dict] = field(default=None)
 
 
 PERSONAS: list[Persona] = [
@@ -175,5 +182,24 @@ PERSONAS: list[Persona] = [
         ),
         goal="Pay ₹200 — agent should retain DOB after a name-correction retry",
         expected_outcome="payment_success",
+    ),
+    Persona(
+        name="api_failure_during_payment",
+        account_id="ACC1001",
+        system_prompt=(
+            "You are a cooperative customer paying a bill. "
+            "Your account is ACC1001, name Nithin Jain, DOB 14th May 1990. "
+            "When asked for card details, provide: card 4532015112830366, "
+            "CVV 123, expiry 12/2027, cardholder Nithin Jain. "
+            "If the agent tells you the payment failed due to a technical issue, "
+            "stay calm and re-submit the SAME card details again. Keep trying "
+            "(up to 3 times) — the agent will eventually terminate the session "
+            "with a 'please call back' message; at that point say CONVERSATION_ENDED."
+        ),
+        goal="Attempt to pay ₹500 — payment API is down on our side, "
+             "agent must reach TERMINAL_PAYMENT_FAILED cleanly after exhausting "
+             "the API retry budget without ever charging the user",
+        expected_outcome="payment_api_failure",
+        fault_injection={"payment_api": "server_error"},
     ),
 ]

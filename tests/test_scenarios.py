@@ -941,7 +941,48 @@ def test_transient_error_then_recovery_resets_counter(
     assert agent._conv.state != State.TERMINAL_TRANSIENT_FAILURES
 
 
-# ── Scenario 25: Missing OPENAI_API_KEY raises a clear error, not KeyError ──
+# ── Scenario 25: API failure during payment — 3 consecutive server_errors  ──
+#                  reach TERMINAL_PAYMENT_FAILED cleanly without charging
+#                  This mirrors the api_failure_during_payment Tier-3 persona.
+
+@patch("handlers.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("handlers.extract_account_id", side_effect=smart_account_id)
+@patch("handlers.extract_identity", side_effect=[
+    mock_identity(name="Nithin Jain"),
+    mock_identity(dob=date(1990, 5, 14)),
+])
+@patch("handlers.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
+@patch("handlers.extract_amount", return_value=mock_amount(Decimal("500.00")))
+@patch("handlers.process_payment", return_value=mock_payment_failure("server_error"))
+@patch("handlers.extract_card", return_value=mock_card(
+    number="4532015112830366", cvv="123", month=12, year=2027, cardholder="Nithin Jain"
+))
+def test_payment_api_persistently_down_terminates_cleanly(
+    mock_ec, mock_pp, mock_ea, mock_edc, mock_ei, mock_eid, mock_la
+):
+    """Payment API returns server_error on every attempt (real-world: 5xx
+    outage, processor degradation). The agent must:
+      1. Burn payment_api_retries cleanly (NOT card_validation_retries).
+      2. Reach TERMINAL_PAYMENT_FAILED after the 3rd attempt.
+      3. Never charge the user (transaction_id remains None).
+      4. Drop card data from memory after each call (we already pin
+         this elsewhere; the assertion below is the integration check)."""
+    agent = Agent()
+    agent.next("hi"); agent.next("ACC1001"); agent.next("Nithin Jain")
+    agent.next("DOB"); agent.next("yes"); agent.next("500")
+    # Three card submissions, each hitting API server_error.
+    agent.next("full card details — attempt 1")
+    agent.next("full card details — attempt 2")
+    r = msg(agent.next("full card details — attempt 3"))
+    assert agent._conv.state == State.TERMINAL_PAYMENT_FAILED
+    assert agent._conv.payment_api_retries == 3
+    assert agent._conv.card_validation_retries == 0
+    assert agent._conv.transaction_id is None
+    assert agent._conv.card is None  # dropped from memory after each API call
+    assert "unable" in r.lower() or "sorry" in r.lower()
+
+
+# ── Scenario 26: Missing OPENAI_API_KEY raises a clear error, not KeyError ──
 
 def test_missing_api_key_clear_error(monkeypatch):
     import importlib

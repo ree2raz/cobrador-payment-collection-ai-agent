@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Optional
+from unittest.mock import MagicMock, patch
 
 from openai import OpenAI
 
@@ -17,6 +19,46 @@ logger = logging.getLogger(__name__)
 
 SIMULATOR_MODEL = os.getenv("OPENAI_FAST_MODEL", "gpt-5.4-mini")
 MAX_TURNS = 25
+
+
+@contextmanager
+def _apply_fault_injection(persona: Persona):
+    """Apply per-persona fault injection (e.g. force payment-API failures)
+    via mock.patch at the same boundary scripted tests use. The handlers
+    module imports `process_payment` directly, so we patch
+    `handlers.process_payment` — the same place test_scenarios.py patches.
+    """
+    if not persona.fault_injection:
+        yield
+        return
+
+    patches = []
+    if persona.fault_injection.get("payment_api") == "server_error":
+        # Return a failing PaymentResult so the agent's retry path fires.
+        # Doesn't raise — the agent expects PaymentResult, and a raise
+        # would go through the defense-in-depth `except Exception` and
+        # behave the same. Using the explicit error_code is clearer.
+        from tools.payment_api import PaymentResult
+        patches.append(
+            patch(
+                "handlers.process_payment",
+                return_value=PaymentResult(success=False, error_code="server_error"),
+            )
+        )
+
+    if not patches:
+        yield
+        return
+
+    # Stack the patches as a single context.
+    with patches[0] as _:
+        for extra in patches[1:]:
+            extra.__enter__()
+        try:
+            yield
+        finally:
+            for extra in patches[1:]:
+                extra.__exit__(None, None, None)
 
 
 @dataclass
@@ -37,6 +79,14 @@ class SimulationResult:
 
 
 def simulate(persona: Persona) -> SimulationResult:
+    """Drive a full conversation as `persona`, optionally with fault
+    injection active (e.g. forced payment-API failures). The fault
+    injection context is held for the entire conversation lifetime."""
+    with _apply_fault_injection(persona):
+        return _simulate_inner(persona)
+
+
+def _simulate_inner(persona: Persona) -> SimulationResult:
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     agent = Agent()
     result = SimulationResult(persona_name=persona.name)

@@ -58,7 +58,7 @@ Live LLM calls against the brief's exact phrasings. Skipped offline; run before 
 | amount | `"a thousand rupees"`, `"clear the full amount"`, `"can I do 500 for now"` |
 | card | spaced number, verbal CVV `"one two three"`, verbal expiry, compound |
 
-### Tier 3 — Persona Simulation (`eval/personas.py`, 12 personas)
+### Tier 3 — Persona Simulation (`eval/personas.py`, 13 personas)
 
 LLM-driven simulator role-plays a customer; agent runs the real flow; LLM-as-judge scores the transcript. Each persona pins one failure mode:
 
@@ -76,6 +76,7 @@ LLM-driven simulator role-plays a customer; agent runs the real flow; LLM-as-jud
 | `invalid_card` | Luhn-failing number → retry success |
 | `adversarial_imposter` | Wrong name with correct DOB — must reach `TERMINAL_VERIFICATION_FAILED` |
 | `prompt_injector` | Tries to extract stored account data via injection |
+| `api_failure_during_payment` | **Fault-injected** payment-API 5xx — agent must exhaust `payment_api_retries`, reach `TERMINAL_PAYMENT_FAILED` cleanly, never charge the user, drop card from memory |
 
 ---
 
@@ -112,6 +113,11 @@ uv run python -m eval.run_eval --messy
 # Tier 3 — full persona simulation
 uv run python -m eval.run_eval --tier 3
 uv run python -m eval.run_eval --tier 3 --personas cooperative rambling adversarial_imposter
+
+# Tier 3 with statistical rigor — N=5 runs, report mean ± stddev.
+# Use this for any claims that go in the README; single-run numbers
+# have ±0.3 LLM-judge noise on task_completion.
+uv run python -m eval.run_eval --tier 3 --repeat 5
 
 # All
 uv run python -m eval.run_eval --tier all --messy
@@ -155,7 +161,7 @@ The brief's sandbox doesn't validate idempotency keys, but production processors
 Collecting card number + CVV in chat is inherently insecure. The agent itself can't fix this — production deployment would use Stripe.js / equivalent tokenization so raw card data never reaches the agent. **Mitigation:** card object dropped from memory immediately after the API call; logger masks card number to last 4 and always masks CVV; PII filter inspects every outgoing message.
 
 ### English-first
-The LLM tolerates light Hindi mixing in practice, but it's not contractually guaranteed. **Pinned by:** all 12 personas are English; **Accepted:** brief examples are English.
+The LLM tolerates light Hindi mixing in practice, but it's not contractually guaranteed. **Pinned by:** all 13 personas are English; **Accepted:** brief examples are English.
 
 ### LLM-as-judge variance
 Tier 3 task-completion scores vary ±0.3 across runs because the judge itself is an LLM. The `0%` PII leak and `100%` adversarial-rejection / injection-block metrics are deterministically checked, not judge-scored, so those are stable. **Accepted:** rerun N times and take the mean for high-stakes claims.
@@ -172,11 +178,11 @@ choices, not blind spots.
 |---|---|---|
 | **CI on every PR** | Catches regressions before merge | **Done** — `.github/workflows/ci.yml` runs tiers 1+2 with coverage on push/PR to `main` / `dev`. Coverage gate at 80% (lower because integration-only paths are skipped offline). |
 | **Regression baseline diffing** | Tier 3 metrics dropping 0.5 between releases should block the release; today nothing does | Out of scope — needs a metrics store (S3 / Postgres) and a release gate; one-shot take-home doesn't justify it |
-| **Statistical significance on LLM evals** | A 4.67 → 4.50 dip might be noise; without confidence intervals you can't tell signal from variance | Out of scope — would need N≥5 reruns per persona and bootstrap CIs; cost grows linearly |
+| **Statistical significance on LLM evals** | A 4.67 → 4.50 dip might be noise; without confidence intervals you can't tell signal from variance | **Implemented** — `--repeat N` runs Tier 3 N times and reports each metric as mean ± stddev across runs, plus per-run values. Use N=5 for high-stakes claims; cost scales linearly |
 | **Property-based testing** (`Hypothesis`) for validators | Generative testing finds edge cases parametrize misses (e.g. `Decimal("0.001")`, leap-year-ending-in-00) | Considered — parametrize covers the known classes; Hypothesis is high value but needs strategy design |
 | **Mutation testing** (`mutmut` / `cosmic-ray`) | Tells you which tests are actually load-bearing vs. decorative | Out of scope — useful insight but expensive to set up and run |
 | **Persona-set versioning** | When you add `name_typo_recovery`, old aggregates aren't comparable; results should carry a persona-set hash | Out of scope — would change the JSON schema; defer to a real production rollout |
-| **Cost tracking per eval run** | Tier 3 is `12 personas × ~5 turns × 2 LLM calls + 12 judge calls ≈ ~120 LLM calls per run` ≈ a few cents each, real money at scale | Out of scope — small enough at take-home scale |
+| **Cost tracking per eval run** | Tier 3 is `13 personas × ~5 turns × 2 LLM calls + 12 judge calls ≈ ~120 LLM calls per run` ≈ a few cents each, real money at scale | Out of scope — small enough at take-home scale |
 | **Red-team corpus** (`garak`, `PromptInject`) | `prompt_injector` is one persona with one phrasing; a real red-team uses hundreds | Out of scope — one persona is enough to prove the agent's architecture (templated responses, LLM scope confined) holds; full corpus is for production hardening |
 | **Production telemetry loop** | Compare eval personas against real production traces to find drift | N/A — no production yet |
 | **A/B prompt harness** | Test prompt variants under controlled conditions before shipping | Out of scope — useful when iterating on extraction quality with real traffic |
