@@ -4,21 +4,69 @@
 
 ---
 
-## Quick Start
+## For the Prodigal Evaluator — Quick Plug-in
 
-**Requirements**: Python 3.12+, [`uv`](https://docs.astral.sh/uv/)
+Three steps to wire Cobrador into your LLM-based evaluator. Total setup: under a minute.
 
 ```bash
-# Clone and install
+# 1. Install (Python 3.12+ and uv required)
 git clone https://github.com/ree2raz/cobrador-payment-collection-ai-agent
 cd cobrador-payment-collection-ai-agent
 uv sync
 
-# Set your OpenAI API key
+# 2. Set the OpenAI key (used only by the agent's extractors)
 export OPENAI_API_KEY=sk-...
 
-# Run interactive REPL
-uv run python cli.py
+# 3. Sanity check — runs all 183 deterministic tests in ~1s, no API calls
+uv run pytest -m "not integration"
+```
+
+**Calling the agent — matches the brief's interface exactly:**
+
+```python
+from agent import Agent
+
+agent = Agent()                          # No args required
+response = agent.next("Hi")              # → {"message": "Hello! …"}
+response = agent.next("My account is ACC1001")
+response = agent.next("Nithin Jain")
+# ... loop until response indicates terminal state
+```
+
+**Contract guarantees your evaluator can rely on:**
+
+- `Agent()` takes no arguments; one instance = one conversation. Spin up a fresh `Agent()` for each persona.
+- `agent.next(str) -> {"message": str}` — exactly one turn per call, state persists internally, no manual resets needed between turns.
+- `agent._conv.state` exposes a `State` enum (from `core.state_machine`) for terminal-state detection. The `TERMINAL_STATES` set in the same module is the canonical "conversation is over" check.
+- Deterministic: FSM transitions are deterministic by construction; LLM extractors run at `temperature=0.0` with pydantic-validated structured outputs.
+- No external setup between turns. No file writes, no network state. Phoenix tracing and the JSONL event log are opt-in via env vars and don't affect agent behavior.
+
+**Test accounts** (lookup-account API responds with these in the sandbox):
+
+| Account ID | Name | DOB | Aadhaar Last 4 | Pincode | Balance |
+|---|---|---|---|---|---|
+| ACC1001 | Nithin Jain | 1990-05-14 | 4321 | 400001 | ₹1,250.75 |
+| ACC1002 | Rajarajeswari Balasubramaniam | 1985-11-23 | 9876 | 400002 | ₹540.00 |
+| ACC1003 | Priya Agarwal (zero balance) | 1992-08-10 | 2468 | 400003 | ₹0.00 |
+| ACC1004 | Rahul Mehta (leap-year DOB) | 1988-02-29 | 1357 | 400004 | ₹3,200.50 |
+
+**If you'd like to run our own eval framework alongside yours:**
+
+```bash
+uv run python -m eval.run_eval --tier 3                # one run, 13 personas
+uv run python -m eval.run_eval --tier 3 --repeat 5     # N=5, mean ± stddev
+uv run python -m eval.run_eval --tier all --messy      # full pipeline
+```
+
+See [EVALUATION.md](./EVALUATION.md) for the full eval design and observations on where the agent struggles. See [DESIGN.md](./DESIGN.md) for architecture + key decisions.
+
+---
+
+## Quick Start (interactive use)
+
+```bash
+# After the install steps above:
+uv run python cli.py    # Interactive REPL
 ```
 
 ---
