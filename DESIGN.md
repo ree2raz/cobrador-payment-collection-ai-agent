@@ -81,7 +81,7 @@ failure states (`ACCOUNT_NOT_FOUND`, `VERIFICATION_FAILED`,
 2. **Compliance policy as declarative YAML** — FDCPA / RBI rules consumed by a guardrails layer; policy changes wouldn't require code edits.
 3. **Voice front-end** — The FSM core is transport-agnostic; plugging in Twilio + Deepgram reuses `agent.py` unchanged.
 4. **Fine-tuned extraction model** — Replace GPT-5.4 in extractors with a small fine-tuned model (~80% cost reduction at comparable accuracy on this narrow task).
-5. **Production telemetry + regression baselines** — Per-state latency / extraction-confidence dashboards durably stored, plus Tier 3 metrics persisted per release so a `mean_security` regression fails CI.
+5. **Production telemetry + cross-release baselines** — Per-state latency and extraction-confidence dashboards durably stored. Within-run statistical confidence on Tier 3 is already built (`--repeat N` reports mean ± stddev across runs); what's missing is *cross-release* persistence so a `mean_security` regression between v1.4 → v1.5 fails CI automatically.
 
 ---
 
