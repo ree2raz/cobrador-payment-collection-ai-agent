@@ -49,6 +49,25 @@ def verify_identity(conv: ConversationState) -> VerificationResult:
     elif pincode_match:
         which_factor = "pincode"
 
+    from event_log import event_log
+    event_log.emit(
+        "verification",
+        verified=(name_match and secondary_match),
+        name_match=name_match,
+        name_provided=conv.provided_name,
+        name_account=account.full_name,
+        dob_match=dob_match,
+        dob_provided=conv.provided_dob,
+        dob_account=account.dob,
+        aadhaar_match=aadhaar_match,
+        aadhaar_provided=conv.provided_aadhaar4,
+        aadhaar_account=account.aadhaar_last4,
+        pincode_match=pincode_match,
+        pincode_provided=conv.provided_pincode,
+        pincode_account=account.pincode,
+        which_factor=which_factor,
+    )
+
     return VerificationResult(
         verified=name_match and secondary_match,
         name_match=name_match,

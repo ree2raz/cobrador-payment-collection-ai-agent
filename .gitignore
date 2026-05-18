@@ -9,3 +9,5 @@ eval/results/
 *_CONTEXT.md
 .coverage
 *.file
+logs/
+*.jsonl

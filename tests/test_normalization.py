@@ -4,23 +4,24 @@ from core.normalization import normalize_name, normalize_account_id, normalize_p
 
 class TestNormalizeName:
     def test_basic(self):
-        assert normalize_name("Nithin Jain") == "Nithin Jain"
+        assert normalize_name("Nithin Jain") == "nithin jain"
 
     def test_extra_whitespace(self):
-        assert normalize_name("Nithin  Jain") == "Nithin Jain"
+        assert normalize_name("Nithin  Jain") == "nithin jain"
 
     def test_trailing_whitespace(self):
-        assert normalize_name("  Nithin Jain  ") == "Nithin Jain"
+        assert normalize_name("  Nithin Jain  ") == "nithin jain"
 
     def test_unicode_nfc(self):
-        # NFC decomposed → composed
+        # NFC decomposed → composed (and casefold)
         import unicodedata
         decomposed = unicodedata.normalize("NFD", "Nithin Jain")
-        assert normalize_name(decomposed) == "Nithin Jain"
+        assert normalize_name(decomposed) == "nithin jain"
 
-    def test_preserves_case(self):
-        # Should NOT lowercase
-        assert normalize_name("NITHIN JAIN") == "NITHIN JAIN"
+    def test_case_insensitive(self):
+        # User-typed "rahul mehta" must match account "Rahul Mehta"
+        assert normalize_name("RAHUL MEHTA") == normalize_name("Rahul Mehta")
+        assert normalize_name("rahul mehta") == normalize_name("Rahul Mehta")
 
 
 class TestNormalizeAccountId:

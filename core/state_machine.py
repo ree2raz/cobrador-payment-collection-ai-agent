@@ -126,6 +126,11 @@ class ConversationState:
     payment_amount: Optional[Decimal] = None
     card: Optional[CardDetails] = None
 
+    # User volunteered an amount before verification that exceeded the
+    # balance — surface it at balance_announcement time so we don't silently
+    # ignore what they said and ask "how much" with no acknowledgment.
+    volunteered_amount_over_balance: Optional[Decimal] = None
+
     # Retry counters
     account_lookup_retries: int = 0
     verification_retries: int = 0
@@ -144,6 +149,13 @@ class ConversationState:
             )
         self.transition_log.append(
             TransitionEvent(self.state, new_state, trigger, response)
+        )
+        from event_log import event_log
+        event_log.emit(
+            "state_transition",
+            from_state=self.state.name,
+            to_state=new_state.name,
+            trigger=trigger,
         )
         self.state = new_state
 

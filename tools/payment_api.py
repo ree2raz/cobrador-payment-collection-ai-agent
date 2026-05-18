@@ -11,6 +11,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from core.state_machine import AccountRecord, CardDetails
+from event_log import event_log, mask_card_number
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ def _make_client() -> httpx.Client:
     reraise=True,
 )
 def lookup_account(account_id: str) -> LookupResult:
+    event_log.emit("api_request", endpoint="lookup_account", account_id=account_id)
     try:
         with _make_client() as client:
             resp = client.post(
@@ -75,10 +77,22 @@ def lookup_account(account_id: str) -> LookupResult:
             logger.warning("lookup_account malformed response account_id=%s", account_id)
             raise ServerError("malformed_response") from e
         logger.info("lookup_account success account_id=%s", account_id)
+        event_log.emit(
+            "api_response",
+            endpoint="lookup_account",
+            status=200,
+            account_id=account.account_id,
+            full_name=account.full_name,
+            dob=account.dob,
+            aadhaar_last4=account.aadhaar_last4,
+            pincode=account.pincode,
+            balance=account.balance,
+        )
         return LookupResult(success=True, account=account)
 
     if resp.status_code == 404:
         logger.info("lookup_account not_found account_id=%s", account_id)
+        event_log.emit("api_response", endpoint="lookup_account", status=404, account_id=account_id)
         return LookupResult(success=False, error_code="account_not_found")
 
     # 5xx or unexpected
@@ -116,6 +130,19 @@ def process_payment(
     reraise=True,
 )
 def _process_payment_request(account_id: str, payload: dict) -> PaymentResult:
+    # Mask card details before logging
+    safe_payload = {
+        **payload,
+        "payment_method": {
+            **payload["payment_method"],
+            "card": {
+                **payload["payment_method"]["card"],
+                "card_number": mask_card_number(payload["payment_method"]["card"]["card_number"]),
+                "cvv": "***",
+            },
+        },
+    }
+    event_log.emit("api_request", endpoint="process_payment", payload=safe_payload)
     try:
         with _make_client() as client:
             resp = client.post(f"{BASE_URL}/api/process-payment", json=payload)
@@ -131,6 +158,7 @@ def _process_payment_request(account_id: str, payload: dict) -> PaymentResult:
             raise ServerError("malformed_response") from e
         txn_id = data.get("transaction_id")
         logger.info("process_payment success account_id=%s txn=%s", account_id, txn_id)
+        event_log.emit("api_response", endpoint="process_payment", status=200, transaction_id=txn_id)
         return PaymentResult(success=True, transaction_id=txn_id)
 
     if resp.status_code == 422:
@@ -141,6 +169,7 @@ def _process_payment_request(account_id: str, payload: dict) -> PaymentResult:
             raise ServerError("malformed_response") from e
         error_code = data.get("error_code", "unknown_error")
         logger.info("process_payment failure account_id=%s error=%s", account_id, error_code)
+        event_log.emit("api_response", endpoint="process_payment", status=422, error_code=error_code)
         return PaymentResult(success=False, error_code=error_code)
 
     logger.warning("process_payment unexpected status=%d account_id=%s", resp.status_code, account_id)

@@ -114,6 +114,16 @@ def balance_announcement_with_amount(balance: Decimal, amount: Decimal) -> str:
         f"and you'd like to pay ₹{amount:,.2f}."
     )
 
+def balance_announcement_over_amount(balance: Decimal, attempted: Decimal) -> str:
+    """Used when the user volunteered a payment amount before verification
+    that exceeds the balance. Acknowledges the attempted amount so the user
+    doesn't feel ignored, then re-prompts within the valid range."""
+    return (
+        f"Your identity has been verified. You mentioned ₹{attempted:,.2f} earlier, "
+        f"but your outstanding balance is only ₹{balance:,.2f} — that's the maximum "
+        "you can pay today. How much would you like to pay?"
+    )
+
 # ── Amount collection ───────────────────────────────────────────────────────
 
 def amount_exceeds_balance(balance: Decimal) -> str:

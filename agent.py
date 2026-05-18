@@ -17,6 +17,7 @@ _IDENTITY_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+from event_log import event_log, mask_card_number
 from core.identity_regex import IdentityHints, extract_identity_hints
 from core.state_machine import (
     CardDetails,
@@ -55,6 +56,8 @@ RETRYABLE_PAYMENT_ERRORS = {"invalid_card", "invalid_cvv", "invalid_expiry", "se
 class Agent:
     def __init__(self) -> None:
         self._conv = ConversationState()
+        event_log.new_conversation()
+        event_log.emit("conversation_start")
 
     def next(self, user_input: str) -> dict:
         """Process one turn. Returns {"message": str}.
@@ -64,15 +67,28 @@ class Agent:
         rendered as a generic retry message. Internal FSM invariant failures are
         re-raised so tests and operators see real code bugs."""
         user_input = user_input.strip()
+        event_log.emit(
+            "turn_start",
+            state=self._conv.state.name,
+            user_input=user_input,
+            provided_name=self._conv.provided_name,
+            provided_dob=self._conv.provided_dob,
+            provided_aadhaar4=self._conv.provided_aadhaar4,
+            provided_pincode=self._conv.provided_pincode,
+            payment_amount=self._conv.payment_amount,
+            volunteered_over=self._conv.volunteered_amount_over_balance,
+        )
         try:
             response = self._process(user_input)
         except (InvalidTransitionError, AssertionError):
             logger.exception("Internal state invariant failed (state=%s)", self._conv.state)
+            event_log.emit("turn_error", state=self._conv.state.name, kind="invariant")
             raise
         except Exception as exc:
             logger.exception(
                 "Unhandled error in turn (state=%s): %s", self._conv.state, exc
             )
+            event_log.emit("turn_error", state=self._conv.state.name, error=repr(exc))
             response = R.TRANSIENT_ERROR
         # Final PII redaction layer — defense in depth. Allow DOB readback
         # only while we're prompting the customer to confirm the date we
@@ -83,6 +99,7 @@ class Agent:
             allow_dob_readback=self._conv.awaiting_dob_confirmation,
         )
         logger.debug("state=%s response=%r", self._conv.state, response[:80])
+        event_log.emit("turn_end", state=self._conv.state.name, response=response)
         return {"message": response}
 
     # ── Main dispatch ───────────────────────────────────────────────────────
@@ -108,7 +125,12 @@ class Agent:
                 self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
                 return R.ABORTED
             if extraction.account_id is None:
-                # Greeting / chit-chat with no account ID — don't burn a retry
+                # Greeting / chit-chat with no account ID — don't burn a retry.
+                # Still stash any volunteered name/aadhaar/pincode so we don't
+                # re-ask once verification starts. DOB intentionally skipped:
+                # without an account we can't run the confirm-back flow, and
+                # the user will re-state it when asked.
+                self._stash_identity_no_dob(user_input)
                 return R.GREETING
             self._conv.account_id = extraction.account_id
             response = self._do_lookup()
@@ -145,6 +167,8 @@ class Agent:
             return R.ABORTED
 
         if extraction.account_id is None:
+            # Stash any volunteered identity so we don't re-ask later.
+            self._stash_identity_no_dob(user_input)
             # Asking a question shouldn't burn a retry — only an
             # attempted-but-unparseable account ID should.
             if extraction.user_intent == "asking_question":
@@ -307,6 +331,11 @@ class Agent:
                 response = R.balance_announcement_with_amount(balance, self._conv.payment_amount)
                 self._conv.transition(State.AWAITING_CARD, trigger="balance_shared_amount_precollected")
                 return f"{response} {self._card_prompt_after_amount(precollected_amount=False)}"
+            if self._conv.volunteered_amount_over_balance is not None:
+                attempted = self._conv.volunteered_amount_over_balance
+                self._conv.volunteered_amount_over_balance = None
+                self._conv.transition(State.AWAITING_AMOUNT, trigger="balance_shared_over_balance")
+                return R.balance_announcement_over_amount(balance, attempted)
             self._conv.transition(State.AWAITING_AMOUNT, trigger="balance_shared")
             return R.balance_announcement(balance)
 
@@ -405,6 +434,36 @@ class Agent:
             return self._do_verification()
         return self._ask_identity()
 
+    def _stash_identity_no_dob(self, user_input: str) -> None:
+        """Stash name/aadhaar/pincode volunteered before we have an account.
+        DOB is intentionally skipped — we can't run the confirm-back flow
+        without an account, and the user will re-state it naturally when
+        asked for identity. Only fills empty fields; never overwrites.
+        """
+        hints = extract_identity_hints(user_input)
+        name = hints.full_name
+        aadhaar4 = hints.aadhaar_last4
+        pincode = hints.pincode
+        if _IDENTITY_KEYWORDS.search(user_input):
+            try:
+                extraction = extract_identity(
+                    user_input,
+                    {"full_name": None, "dob": None, "aadhaar_last4": None, "pincode": None},
+                )
+            except Exception as exc:
+                logger.warning("turn-1 identity stash extract failed: %s", exc)
+                extraction = None
+            if extraction is not None:
+                name = name or extraction.full_name
+                aadhaar4 = aadhaar4 or extraction.aadhaar_last4
+                pincode = pincode or extraction.pincode
+        if name and self._conv.provided_name is None:
+            self._conv.provided_name = name
+        if aadhaar4 and self._conv.provided_aadhaar4 is None:
+            self._conv.provided_aadhaar4 = aadhaar4
+        if pincode and self._conv.provided_pincode is None:
+            self._conv.provided_pincode = pincode
+
     def _opportunistic_payment_details(self, user_input: str) -> None:
         """Capture volunteered payment details without advancing payment flow.
 
@@ -423,8 +482,14 @@ class Agent:
                     amount = account.balance
                 else:
                     amount = amount_extraction.amount
-                if amount is not None and validate_amount(amount, account.balance) is None:
-                    self._conv.payment_amount = amount
+                if amount is not None:
+                    err = validate_amount(amount, account.balance)
+                    if err is None:
+                        self._conv.payment_amount = amount
+                    elif err == "insufficient_balance":
+                        # Stash so we can acknowledge at balance-announcement
+                        # time instead of silently asking "how much" again.
+                        self._conv.volunteered_amount_over_balance = amount
 
         if not self._looks_like_card_input(user_input):
             return

@@ -21,6 +21,8 @@ def main() -> None:
     print("  Cobrador — Payment Collection Agent")
     print("  Type 'quit' or 'exit' to end the session.")
     print("=" * 60)
+    if os.getenv("COBRADOR_EVENT_LOG"):
+        print(f"  Event log → {os.environ['COBRADOR_EVENT_LOG']}")
 
     agent = Agent()
     # Kick off the conversation

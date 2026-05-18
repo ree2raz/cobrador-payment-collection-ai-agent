@@ -3,8 +3,14 @@ import re
 
 
 def normalize_name(name: str) -> str:
-    """Unicode-NFC normalize + collapse whitespace. No case change."""
-    normalized = unicodedata.normalize("NFC", name)
+    """Unicode-NFC normalize + casefold + collapse whitespace.
+
+    Casefold (not just lower) so names with German ß / Turkish dotless-I
+    compare correctly. Case is not a meaningful identity signal — it can't
+    even be heard on the voice channel — but "strict matching" per the
+    brief is still preserved: no fuzzy / edit-distance / substring match.
+    """
+    normalized = unicodedata.normalize("NFC", name).casefold()
     return re.sub(r"\s+", " ", normalized).strip()
 
 

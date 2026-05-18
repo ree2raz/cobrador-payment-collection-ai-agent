@@ -187,6 +187,26 @@ PHOENIX=1 uv run python cli.py
 
 Browse traces at **http://localhost:6006**.
 
+### Structured event log (JSONL)
+
+Phoenix shows LLM spans but not application intent. For offline debugging
+(verification mismatches, FSM transitions, payment-API payloads), set
+`COBRADOR_EVENT_LOG` to a path and one JSON record per event will be
+appended:
+
+```bash
+COBRADOR_EVENT_LOG=./logs/events.jsonl uv run python cli.py
+
+# Then inspect with jq:
+jq 'select(.event == "verification")' logs/events.jsonl
+jq 'select(.event == "state_transition") | "\(.from_state) -> \(.to_state)"' logs/events.jsonl
+```
+
+Event types: `conversation_start`, `turn_start`, `turn_end`, `turn_error`,
+`state_transition`, `llm_extract`, `api_request`, `api_response`,
+`verification`. Card numbers logged last-4 only; CVV always masked. The
+log file contains DOB / Aadhaar / pincode in clear — gitignored by default.
+
 ---
 
 ## API Endpoints
