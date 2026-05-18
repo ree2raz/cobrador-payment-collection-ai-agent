@@ -554,9 +554,10 @@ def test_expired_card(mock_ec, mock_ea, mock_edc, mock_ei, mock_eid, mock_la):
     r = msg(agent.next("expired card"))
     assert agent._conv.state == State.AWAITING_CARD
     assert "expired" in r.lower() or "expiry" in r.lower() or "invalid" in r.lower()
-    # Expired card must increment the payment retry counter (previously it
-    # didn't, allowing the user to loop forever on invalid expiry).
-    assert agent._conv.payment_retries == 1
+    # Expired card is client-side validation → counts against the
+    # card-validation budget (not the API-side budget).
+    assert agent._conv.card_validation_retries == 1
+    assert agent._conv.payment_api_retries == 0
 
 
 # ── Scenario 11b: Invalid CVV increments retries (regression) ───────────────
@@ -579,7 +580,9 @@ def test_invalid_cvv_increments_retries(mock_ec, mock_ea, mock_edc, mock_ei, moc
     r = msg(agent.next("4532015112830366, exp 12/2027, CVV 12, Nithin Jain"))
     assert agent._conv.state == State.AWAITING_CARD
     assert "cvv" in r.lower()
-    assert agent._conv.payment_retries == 1
+    # Client-side CVV length check → card-validation budget.
+    assert agent._conv.card_validation_retries == 1
+    assert agent._conv.payment_api_retries == 0
 
 
 # ── Scenario 11c: Card validation retries exhaust → TERMINAL_PAYMENT_FAILED ──
@@ -784,9 +787,11 @@ def test_payment_unexpected_exception(mock_ec, mock_ea, mock_edc, mock_ei, mock_
     agent.next("hi"); agent.next("ACC1001"); agent.next("Nithin Jain")
     agent.next("DOB 14 May 1990"); agent.next("yes"); agent.next("500")
     r = msg(agent.next("full card"))
-    # Treated as retryable server_error — back to AWAITING_CARD, retry incremented
+    # Treated as retryable server_error → API-side retry counter, not
+    # card-validation (this is an API outage, not a user typo).
     assert agent._conv.state == State.AWAITING_CARD
-    assert agent._conv.payment_retries == 1
+    assert agent._conv.payment_api_retries == 1
+    assert agent._conv.card_validation_retries == 0
 
 
 # ── Scenario 19: Over-balance volunteered amount is acknowledged ────────────
@@ -857,7 +862,86 @@ def test_no_progress_card_terminates(
     assert "card" in last.lower() or "call back" in last.lower()
 
 
-# ── Scenario 22: Missing OPENAI_API_KEY raises a clear error, not KeyError ──
+# ── Scenario 22: Independent payment retry budgets ─────────────────────────
+
+@patch("handlers.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("handlers.extract_account_id", side_effect=smart_account_id)
+@patch("handlers.extract_identity", side_effect=[
+    mock_identity(name="Nithin Jain"),
+    mock_identity(dob=date(1990, 5, 14)),
+])
+@patch("handlers.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
+@patch("handlers.extract_amount", return_value=mock_amount(Decimal("500.00")))
+@patch("handlers.process_payment", return_value=mock_payment_failure("server_error"))
+@patch("handlers.extract_card", return_value=mock_card(
+    # Card passes all client-side validation (Luhn-good, CVV 3, valid expiry)
+    # so we reach process_payment, which returns server_error.
+    number="4532015112830366", cvv="123", month=12, year=2027, cardholder="Nithin Jain"
+))
+def test_payment_api_retries_independent_from_card_validation(
+    mock_ec, mock_pp, mock_ea, mock_edc, mock_ei, mock_eid, mock_la
+):
+    """An API server_error must increment payment_api_retries, NOT
+    card_validation_retries. The brief asks us to distinguish user-fixable
+    errors from terminal/server failures — sharing one counter conflates
+    them."""
+    agent = Agent()
+    agent.next("hi"); agent.next("ACC1001"); agent.next("Nithin Jain")
+    agent.next("DOB"); agent.next("yes"); agent.next("500")
+    agent.next("full card details")
+    assert agent._conv.state == State.AWAITING_CARD
+    assert agent._conv.payment_api_retries == 1
+    assert agent._conv.card_validation_retries == 0
+
+
+# ── Scenario 23: Repeated TRANSIENT_ERROR → graceful terminal ───────────────
+
+@patch("handlers.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("handlers.extract_account_id", side_effect=smart_account_id)
+@patch("handlers.extract_identity", side_effect=RuntimeError("LLM is down"))
+def test_consecutive_transient_errors_terminate_session(mock_ei, mock_eid, mock_la):
+    """If the LLM is genuinely down, the agent must NOT loop forever
+    saying 'brief technical hiccup'. After MAX_CONSECUTIVE_TRANSIENT_ERRORS
+    consecutive failures we close gracefully so the user knows to call back."""
+    agent = Agent()
+    agent.next("hi"); agent.next("ACC1001")
+    # Each of these turns will raise inside _process and route through
+    # the exception boundary → TRANSIENT_ERROR.
+    msg(agent.next("Nithin Jain, DOB 14 May 1990"))
+    assert agent._conv.consecutive_transient_errors == 1
+    msg(agent.next("trying again"))
+    assert agent._conv.consecutive_transient_errors == 2
+    last = msg(agent.next("once more"))
+    assert agent._conv.state == State.TERMINAL_TRANSIENT_FAILURES
+    assert "technical issue" in last.lower() or "call back" in last.lower()
+
+
+# ── Scenario 24: Transient error followed by recovery resets the counter ────
+
+@patch("handlers.lookup_account", return_value=mock_lookup_success("ACC1001"))
+@patch("handlers.extract_account_id", side_effect=smart_account_id)
+@patch("handlers.extract_identity", side_effect=[
+    RuntimeError("transient blip"),  # turn 3 — raises
+    mock_identity(name="Nithin Jain"),  # turn 4 — recovers
+    mock_identity(dob=date(1990, 5, 14)),  # turn 5
+])
+@patch("handlers.extract_dob_confirmation", return_value=mock_dob_confirm(True, "confirmed"))
+def test_transient_error_then_recovery_resets_counter(
+    mock_edc, mock_ei, mock_eid, mock_la
+):
+    """A single transient error followed by a normal turn must reset the
+    counter — we don't want to terminate a cooperative user just because
+    one earlier message had a network blip."""
+    agent = Agent()
+    agent.next("hi"); agent.next("ACC1001")
+    msg(agent.next("blip turn"))
+    assert agent._conv.consecutive_transient_errors == 1
+    msg(agent.next("Nithin Jain"))  # successful turn
+    assert agent._conv.consecutive_transient_errors == 0
+    assert agent._conv.state != State.TERMINAL_TRANSIENT_FAILURES
+
+
+# ── Scenario 25: Missing OPENAI_API_KEY raises a clear error, not KeyError ──
 
 def test_missing_api_key_clear_error(monkeypatch):
     import importlib

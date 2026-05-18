@@ -235,6 +235,15 @@ NO_PROGRESS_CARD = (
     "Please call back when you have your card ready. Thank you."
 )
 
+# Used after multiple consecutive TRANSIENT_ERROR turns (LLM down, network
+# blip persisting). Distinct from NO_PROGRESS_* because the user did
+# nothing wrong — the system is at fault.
+TRANSIENT_FAILURES_TERMINAL = (
+    "I'm having repeated trouble processing your messages — this looks like a "
+    "technical issue on our side. Please call back through the official number "
+    "on your notice in a few minutes. We apologise for the inconvenience."
+)
+
 # ── Payment success ─────────────────────────────────────────────────────────
 
 def payment_success(transaction_id: str, amount: Decimal) -> str:

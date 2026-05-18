@@ -25,6 +25,10 @@ class State(Enum):
     TERMINAL_VERIFICATION_FAILED = auto()
     TERMINAL_PAYMENT_FAILED = auto()
     TERMINAL_NO_PROGRESS = auto()
+    # Repeated unhandled exceptions (LLM down, network blip, schema parse
+    # failure, etc.) — closes the session gracefully so the user isn't
+    # stuck in an infinite "brief hiccup" loop.
+    TERMINAL_TRANSIENT_FAILURES = auto()
     USER_ABORTED = auto()
 
 
@@ -33,8 +37,22 @@ TERMINAL_STATES = {
     State.TERMINAL_VERIFICATION_FAILED,
     State.TERMINAL_PAYMENT_FAILED,
     State.TERMINAL_NO_PROGRESS,
+    State.TERMINAL_TRANSIENT_FAILURES,
     State.USER_ABORTED,
     State.CONFIRM_AND_CLOSE,
+}
+
+# States from which a transient-failure terminal is reachable. Any
+# non-terminal state — repeated exceptions can hit anywhere.
+_TRANSIENT_RECOVERABLE_STATES = {
+    State.AWAITING_ACCOUNT_ID,
+    State.LOOKING_UP_ACCOUNT,
+    State.AWAITING_IDENTITY,
+    State.VERIFYING,
+    State.SHARE_BALANCE,
+    State.AWAITING_AMOUNT,
+    State.AWAITING_CARD,
+    State.PROCESSING_PAYMENT,
 }
 
 
@@ -89,8 +107,16 @@ ALLOWED_TRANSITIONS: dict[State, set[State]] = {
     State.TERMINAL_VERIFICATION_FAILED: set(),
     State.TERMINAL_PAYMENT_FAILED: set(),
     State.TERMINAL_NO_PROGRESS: set(),
+    State.TERMINAL_TRANSIENT_FAILURES: set(),
     State.USER_ABORTED: set(),
 }
+
+# TERMINAL_TRANSIENT_FAILURES is reachable from every non-terminal state
+# because the underlying cause (LLM down, network blip, etc.) can fire
+# from any handler. Adding it inline above would be 8 duplicate entries;
+# patch it in here once.
+for _state in _TRANSIENT_RECOVERABLE_STATES:
+    ALLOWED_TRANSITIONS[_state].add(State.TERMINAL_TRANSIENT_FAILURES)
 
 
 @dataclass
@@ -147,14 +173,28 @@ class ConversationState:
     # ignore what they said and ask "how much" with no acknowledgment.
     volunteered_amount_over_balance: Optional[Decimal] = None
 
-    # Retry counters
+    # Retry counters — payment is split into two budgets so a user typing
+    # wrong card numbers a few times (client- or API-side validation) does
+    # NOT consume the budget for genuine API outages, and vice versa. The
+    # brief explicitly asks us to "distinguish between user-fixable errors
+    # (invalid card) and terminal failures" — sharing one counter conflates
+    # the two root causes under a single cap.
     account_lookup_retries: int = 0
     verification_retries: int = 0
-    payment_retries: int = 0
+    # Bumped on: client-side Luhn / CVV / expiry failure, OR API 422 with
+    # invalid_card / invalid_cvv / invalid_expiry (the user can fix these).
+    card_validation_retries: int = 0
+    # Bumped on: API 5xx exhausted after tenacity retries, or unexpected
+    # exception from the payment library (the user can't fix these).
+    payment_api_retries: int = 0
     # Consecutive turns where the user produced no useful field advancement
     # in identity / amount / card collection. Bounds refusal loops so the
     # agent doesn't keep re-asking forever when the user never cooperates.
     no_progress_turns: int = 0
+    # Consecutive turns ending in a TRANSIENT_ERROR response (LLM down,
+    # network blip, schema parse failure). Reset on any successful turn.
+    # Bounds the "infinite-hiccup" hole when the LLM is genuinely down.
+    consecutive_transient_errors: int = 0
 
     # Completed transaction
     transaction_id: Optional[str] = None

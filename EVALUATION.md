@@ -27,7 +27,7 @@ Pure functions with deterministic inputs:
 | `core/identity_regex` | 21 high-signal cases — one canonical phrasing per regex branch + false-positive guards (trimmed from 40 to keep signal density; near-duplicate phrasings hitting the same branch added no information) |
 | `event_log` | 22 cases — card-number masking (12+ digit sequences, spaced, hyphenated, short, empty), CVV masking (numeric + verbal digits), end-to-end compound scrubs, event-constant uniqueness. Pins the "no raw card data in logs" brief rule against regression |
 
-### Tier 2 — Scripted Scenarios (`tests/test_scenarios.py`, 31 tests)
+### Tier 2 — Scripted Scenarios (`tests/test_scenarios.py`, 34 tests)
 
 Multi-turn flows driven through `Agent.next()` with mocked APIs:
 - Happy path for each of the 4 sample accounts
@@ -42,6 +42,8 @@ Multi-turn flows driven through `Agent.next()` with mocked APIs:
 - Over-balance volunteered amount surfaces a dedicated acknowledgment template
 - No-progress termination (`TERMINAL_NO_PROGRESS`) in identity / card collection
 - Payment idempotency key wiring
+- Independent payment retry budgets — client-side validation vs API-side errors
+- Consecutive-transient-error termination (`TERMINAL_TRANSIENT_FAILURES`) when LLM is down
 
 ### Tier 1.5 — Messy Extraction Accuracy (`eval/messy_cases.py`, 23 live cases)
 

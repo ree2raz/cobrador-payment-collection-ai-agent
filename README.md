@@ -50,7 +50,7 @@ cobrador/
 │   ├── judge.py           # LLM-as-judge scoring
 │   ├── messy_cases.py     # 21 production-style messy extraction test cases
 │   └── run_eval.py        # Three-tier eval runner CLI
-└── tests/                 # 176 deterministic tests passing + 23 live LLM tests skipped offline
+└── tests/                 # 179 deterministic tests passing + 23 live LLM tests skipped offline
     └── test_extraction_messy.py  # Tier 1.5: live LLM messy extraction tests
 ```
 
@@ -100,8 +100,8 @@ PHOENIX=1 uv run python -m eval.run_eval --tier 3
 | API payload/retry/idempotency-key behavior | 4 | ✅ 100% |
 | Identity-regex deterministic pre-extractor | 21 | ✅ 100% |
 | Event-log masking + event-constant uniqueness | 22 | ✅ 100% |
-| Scripted multi-turn scenarios (all 4 accounts + failure paths + no-progress) | 31 | ✅ 100% |
-| **Total** | **176** | **✅ 176/176** |
+| Scripted multi-turn scenarios (all 4 accounts + failure paths + no-progress + retry-budget splits + transient-error termination) | 34 | ✅ 100% |
+| **Total** | **179** | **✅ 179/179** |
 
 ### Tier 1.5 — Messy Extraction Accuracy
 

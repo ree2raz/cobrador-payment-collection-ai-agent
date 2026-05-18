@@ -48,7 +48,7 @@ User Input
 └─────────────────────────────────────────────────────────┘
 ```
 
-**State flow**: `INIT → AWAITING_ACCOUNT_ID → LOOKING_UP_ACCOUNT → AWAITING_IDENTITY → VERIFYING → SHARE_BALANCE → AWAITING_AMOUNT → AWAITING_CARD → PROCESSING_PAYMENT → CONFIRM_AND_CLOSE | TERMINAL_{ACCOUNT_NOT_FOUND, VERIFICATION_FAILED, PAYMENT_FAILED, NO_PROGRESS, USER_ABORTED}`
+**State flow**: `INIT → AWAITING_ACCOUNT_ID → LOOKING_UP_ACCOUNT → AWAITING_IDENTITY → VERIFYING → SHARE_BALANCE → AWAITING_AMOUNT → AWAITING_CARD → PROCESSING_PAYMENT → CONFIRM_AND_CLOSE | TERMINAL_{ACCOUNT_NOT_FOUND, VERIFICATION_FAILED, PAYMENT_FAILED, NO_PROGRESS, TRANSIENT_FAILURES, USER_ABORTED}`
 
 ---
 
@@ -62,6 +62,7 @@ User Input
 | Opportunistic capture | Each handler harvests volunteered info regardless of FSM position | Honors brief rule "do not re-ask for info already provided" without violating "do not skip steps" — fields are captured early, but FSM still walks every state in order |
 | Name matching | Unicode-NFC, **case-sensitive** exact match | Brief explicitly forbids "case-insensitive workarounds for names". Messy lowercase / all-caps input is normalized to Title-Case in the LLM extractor (per the brief's guidance: the LLM is what handles messy natural language) — verification stays strict. An internal `name_case_only_mismatch` flag in the event log surfaces LLM-side normalization failures without ever leaking the cause to the user |
 | Retry message factor-agnostic | "Details don't match — please re-check your full name. If unsure about DOB, try Aadhaar last 4 / pincode." | Brief only lists DOB/Aadhaar/pincode as protected (not name), so naming the failing field is not a literal violation — but it tells an attacker which secondary factor they got right, enabling elimination attacks across 3 retries. Industry-standard collections practice: never reveal which factor failed. The retry message still guides the cooperative user to re-check name and offers an alternate secondary factor if uncertain |
+| Payment retry budgets | **Two independent counters**: `card_validation_retries` for user-fixable errors (client-side Luhn / CVV / expiry, plus API 422 with invalid_card / invalid_cvv / invalid_expiry) and `payment_api_retries` for server-side errors (5xx after tenacity exhausted). Brief asks us to "distinguish user-fixable errors from terminal failures" — sharing one counter conflates the two |
 | Verification retries | 3 attempts; **fields retained** across retries | A typo in one field (typically the name) is the most common failure mode for cooperative users. Wiping all fields forces re-confirmation of DOB the user already validated. The next-turn extractor overwrites whichever field they re-state; `verification_retries` counter still bounds brute-force attempts |
 | Retry message | Suggests trying an alternate secondary factor | Can't reveal which field was wrong (privacy), but the message tells the user they can switch from DOB to Aadhaar/pincode if uncertain |
 | Question handling | Asking a question during account-ID collection does **not** burn a retry | Distinguishes cooperative-but-confused users from junk input. Only an attempted-but-unparseable ID counts against the lookup-retry budget |
@@ -92,6 +93,9 @@ User Input
 | User says "cancel" | Schema `user_intent="wants_to_cancel"` in any extractor | Polite close | Terminal `USER_ABORTED` |
 | Prompt injection attempt | Templated responses + LLM scope confined to extraction | Doesn't disclose stored data | Continues normally; closes via no-progress if user never cooperates |
 | User refuses to provide info (5+ turns) | `no_progress_turns` counter in identity / amount / card collection | State-specific "please call back when ready" | Terminal `TERMINAL_NO_PROGRESS` |
+| Repeated unhandled exception (3+ consecutive `TRANSIENT_ERROR`) | `consecutive_transient_errors` counter in `next()` | "Repeated technical issues — call back in a few minutes" | Terminal `TERMINAL_TRANSIENT_FAILURES` |
+| Client-side card validation failure (Luhn / CVV length / expired) | Pre-API checks in `_handle_card`; increments `card_validation_retries` (separate budget) | Field-specific message; offending field cleared | Re-prompt; terminal after 3 |
+| API-side payment failure (5xx, network error) | tenacity retries inside `process_payment`; on exhaustion increments `payment_api_retries` (separate budget) | "Technical issue, try again in a moment" | Re-prompt; terminal after 3 |
 
 ---
 

@@ -45,9 +45,16 @@ logger = logging.getLogger(__name__)
 
 MAX_VERIFICATION_RETRIES = 3
 MAX_ACCOUNT_LOOKUP_RETRIES = 3
-MAX_PAYMENT_RETRIES = 3
+# Two independent payment budgets — see ConversationState comments for the
+# rationale (brief's "user-fixable vs terminal failures" distinction).
+MAX_CARD_VALIDATION_RETRIES = 3
+MAX_PAYMENT_API_RETRIES = 3
 
-RETRYABLE_PAYMENT_ERRORS = {"invalid_card", "invalid_cvv", "invalid_expiry", "server_error"}
+# API 422 error codes that are user-fixable (typos / wrong card data).
+# server_error is API-side only.
+_USER_FIXABLE_API_ERRORS = {"invalid_card", "invalid_cvv", "invalid_expiry"}
+_SERVER_SIDE_API_ERRORS = {"server_error"}
+RETRYABLE_PAYMENT_ERRORS = _USER_FIXABLE_API_ERRORS | _SERVER_SIDE_API_ERRORS
 
 # Keywords that suggest the message contains identity information worth
 # escalating to the LLM extractor. The deterministic regex extractor (in
@@ -665,13 +672,14 @@ class _CollectionHandlers:
         expiry_year: int,
         cardholder_name: str,
     ) -> str:
-        """Centralized client-side card error handling: increment the payment
-        retry counter, persist the non-offending fields so the user only has to
-        re-enter what failed, and return the appropriate message. Terminates
-        the conversation when retries are exhausted."""
-        self._conv.payment_retries += 1
-        if self._conv.payment_retries >= MAX_PAYMENT_RETRIES:
-            self._conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger="max_payment_retries")
+        """Centralized client-side card error handling: increment the
+        card-validation retry counter (separate from API-side retries),
+        persist the non-offending fields so the user only has to re-enter
+        what failed, and return the appropriate message. Terminates when
+        retries are exhausted."""
+        self._conv.card_validation_retries += 1
+        if self._conv.card_validation_retries >= MAX_CARD_VALIDATION_RETRIES:
+            self._conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger="max_card_validation_retries")
             return R.PAYMENT_FAILED_TERMINAL
 
         # Save partial card with only the offending field(s) cleared so the
@@ -732,9 +740,22 @@ class _CollectionHandlers:
         error_code = result.error_code or "server_error"
 
         if error_code in RETRYABLE_PAYMENT_ERRORS:
-            conv.payment_retries += 1
-            if conv.payment_retries >= MAX_PAYMENT_RETRIES:
-                conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger="max_payment_retries")
+            # API 422 with invalid_card/invalid_cvv/invalid_expiry → the API
+            # rejected the user's card data → counts against the card-
+            # validation budget (a typo, just caught upstream from us).
+            # API 5xx exhausted / server_error → counts against the API budget.
+            if error_code in _USER_FIXABLE_API_ERRORS:
+                conv.card_validation_retries += 1
+                limit = MAX_CARD_VALIDATION_RETRIES
+                counter = conv.card_validation_retries
+                trigger_max = "max_card_validation_retries"
+            else:
+                conv.payment_api_retries += 1
+                limit = MAX_PAYMENT_API_RETRIES
+                counter = conv.payment_api_retries
+                trigger_max = "max_payment_api_retries"
+            if counter >= limit:
+                conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger=trigger_max)
                 return R.PAYMENT_FAILED_TERMINAL
             conv.transition(State.AWAITING_CARD, trigger="payment_retryable_error")
             return R.payment_error_message(error_code)
