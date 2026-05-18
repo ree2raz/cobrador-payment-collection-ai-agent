@@ -46,7 +46,10 @@ IDENTITY_EXTRACTION = (
     "(e.g. 'call me Raja but my full name is Rajarajeswari Balasubramaniam'), extract "
     "the FULL name, not the nickname.\n"
     "4. For DOB: only set dob if you are certain of day, month AND year. If the format "
-    "could be DD-MM or MM-DD (e.g. '01-02-1990'), set dob = null and dob_ambiguous = true.\n"
+    "could be DD-MM or MM-DD (e.g. '01-02-1990'), set dob = null and dob_ambiguous = true. "
+    "Two-digit years for DOB are always 19XX (a customer's birth year cannot be in the "
+    "future): 'May 14, 90' → 1990-05-14, 'born in 88' → year 1988. This is DOB-specific; "
+    "do NOT apply the same rule to card expiry years.\n"
     "5. For Aadhaar: extract only the last 4 digits. If user states their full 12-digit "
     "Aadhaar, extract only the last 4 — NEVER output the full number.\n"
     "6. For pincode: must be exactly 6 digits.\n"
@@ -62,6 +65,10 @@ IDENTITY_EXTRACTION = (
     "// Lowercase-name input — MUST be returned Title-Cased:\n"
     '"hi i am rahul mehta i want to pay 3500"\n'
     '→ {{"full_name": "Rahul Mehta", "dob": null, "dob_ambiguous": false, '
+    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
+    "// Two-digit DOB year — always 19XX (birth year can't be future):\n"
+    '"DOB is May 14, 90"\n'
+    '→ {{"full_name": null, "dob": "1990-05-14", "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
     '"Mr. Rahul Mehta here, aadhaar ends 9876"\n'
     '→ {{"full_name": "Rahul Mehta", "dob": null, "dob_ambiguous": false, '
