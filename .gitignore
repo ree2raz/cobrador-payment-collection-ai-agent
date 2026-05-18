@@ -11,3 +11,9 @@ eval/results/
 *.file
 logs/
 *.jsonl
+
+# Personal drafts and rendered artifacts (kept locally, not pushed)
+*_RJ.*
+design_rj.*
+DESIGN.pdf
+EVALUATION.pdf
