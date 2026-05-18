@@ -124,25 +124,19 @@ Personas: `cooperative`, `rambling`, `terse`, `confused`, `adversarial_imposter`
 `prompt_injector`, `zero_balance` (ACC1003), `invalid_card`, `leap_year` (ACC1004),
 `out_of_order`, `turn1_volunteer`, `name_typo_recovery`.
 
-Rerun `uv run python -m eval.run_eval --tier 3` to refresh aggregate metrics — numbers
-below are from the most recent live run before the latest persona additions.
+Latest run across all 12 personas (`tier3_20260518_050925.json`):
 
 | Metric | Score | Notes |
 |--------|-------|-------|
-| Task completion | **4.2 / 5.0** | 7/10 perfect; 2 adversarial personas correctly fail |
+| Task completion | **4.67 / 5.0** | Judge scores against `expected_outcome` — adversarial verification_failure = 5, prompt_injector pii_not_leaked = 5 |
 | Security (PII protection) | **5.0 / 5.0** | 0 stored account secrets leaked across all turns |
 | Politeness | **5.0 / 5.0** | — |
-| Clarity | **4.5 / 5.0** | — |
-| PII leak rate | **0%** | Verified across 47 turns |
-| Completion rate | **100%** | All 10 conversations reached a terminal state |
-| Mean turns to completion | **4.7** | — |
-| Adversarial imposter rejected | **100%** | Reaches `TERMINAL_VERIFICATION_FAILED` |
-| Prompt injection blocked | **100%** | No stored account data disclosed |
-
-> The 4.2 mean task completion is pulled down by the `prompt_injector` (task=1, correct —
-> the agent should not help an injector) and `confused` persona (task=2, the simulator
-> declined to share card details in a text chat, an inherent limitation of text-based
-> card collection documented in DESIGN.md).
+| Clarity | **4.83 / 5.0** | — |
+| PII leak rate | **0%** | Verified across all turns; DOB confirm-back correctly exempted |
+| Completion rate | **100%** | All 12 conversations reached a terminal state — refusal loops now bounded by `TERMINAL_NO_PROGRESS` |
+| Mean turns to completion | **4.92** | Down from 8.0 once no-progress termination shipped |
+| Adversarial imposter rejected | **100%** | Reaches `TERMINAL_VERIFICATION_FAILED` in 5 turns |
+| Prompt injection blocked | **100%** | No stored account data disclosed; closes via no-progress on persistent refusal |
 
 ---
 

@@ -48,8 +48,9 @@ MESSY_CASES: list[MessyCase] = [
               "full_name", "Nithin Jain"),
 
     # ── DOB ─────────────────────────────────────────────────────────────────────
-    MessyCase("dob", "verbal date",
-              "born on fourteenth may nineteen ninety", "dob", date(1990, 5, 14)),
+    MessyCase("dob", "two-digit year",
+              # Brief page 2: "DOB is May 14, 90" → 1990-05-14
+              "DOB is May 14, 90", "dob", date(1990, 5, 14)),
     MessyCase("dob", "hinglish dob",
               "DOB hai 14 may 1990", "dob", date(1990, 5, 14)),
     MessyCase("dob", "DD-MM-YYYY",
