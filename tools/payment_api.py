@@ -11,7 +11,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from core.state_machine import AccountRecord, CardDetails
-from event_log import event_log, mask_card_number
+from event_log import EVENT_API_REQUEST, EVENT_API_RESPONSE, event_log, mask_card_number
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ def _make_client() -> httpx.Client:
     reraise=True,
 )
 def lookup_account(account_id: str) -> LookupResult:
-    event_log.emit("api_request", endpoint="lookup_account", account_id=account_id)
+    event_log.emit(EVENT_API_REQUEST, endpoint="lookup_account", account_id=account_id)
     try:
         with _make_client() as client:
             resp = client.post(
@@ -78,7 +78,7 @@ def lookup_account(account_id: str) -> LookupResult:
             raise ServerError("malformed_response") from e
         logger.info("lookup_account success account_id=%s", account_id)
         event_log.emit(
-            "api_response",
+            EVENT_API_RESPONSE,
             endpoint="lookup_account",
             status=200,
             account_id=account.account_id,
@@ -92,7 +92,7 @@ def lookup_account(account_id: str) -> LookupResult:
 
     if resp.status_code == 404:
         logger.info("lookup_account not_found account_id=%s", account_id)
-        event_log.emit("api_response", endpoint="lookup_account", status=404, account_id=account_id)
+        event_log.emit(EVENT_API_RESPONSE, endpoint="lookup_account", status=404, account_id=account_id)
         return LookupResult(success=False, error_code="account_not_found")
 
     # 5xx or unexpected
@@ -104,7 +104,14 @@ def process_payment(
     account_id: str,
     amount: Decimal,
     card: CardDetails,
+    idempotency_key: Optional[str] = None,
 ) -> PaymentResult:
+    """Submit a card payment. `idempotency_key` is sent as the
+    `Idempotency-Key` header so tenacity-driven retries (and user-driven
+    re-submits within a single transaction attempt) do not risk a
+    duplicate charge. The sandbox API ignores the header, but production
+    payment processors (Stripe, Razorpay, etc.) require it for safe retry
+    semantics."""
     payload = {
         "account_id": account_id,
         "amount": float(amount),
@@ -119,8 +126,8 @@ def process_payment(
             },
         },
     }
-
-    return _process_payment_request(account_id, payload)
+    headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+    return _process_payment_request(account_id, payload, headers)
 
 
 @retry(
@@ -129,7 +136,9 @@ def process_payment(
     wait=wait_exponential(multiplier=1, min=1, max=4),
     reraise=True,
 )
-def _process_payment_request(account_id: str, payload: dict) -> PaymentResult:
+def _process_payment_request(
+    account_id: str, payload: dict, headers: Optional[dict] = None
+) -> PaymentResult:
     # Mask card details before logging
     safe_payload = {
         **payload,
@@ -142,10 +151,17 @@ def _process_payment_request(account_id: str, payload: dict) -> PaymentResult:
             },
         },
     }
-    event_log.emit("api_request", endpoint="process_payment", payload=safe_payload)
+    event_log.emit(
+        EVENT_API_REQUEST,
+        endpoint="process_payment",
+        payload=safe_payload,
+        idempotency_key=(headers or {}).get("Idempotency-Key"),
+    )
     try:
         with _make_client() as client:
-            resp = client.post(f"{BASE_URL}/api/process-payment", json=payload)
+            resp = client.post(
+                f"{BASE_URL}/api/process-payment", json=payload, headers=headers
+            )
     except (httpx.TimeoutException, httpx.RequestError) as e:
         logger.warning("process_payment network error account_id=%s: %s", account_id, e)
         raise ServerError("network_error") from e
@@ -158,7 +174,7 @@ def _process_payment_request(account_id: str, payload: dict) -> PaymentResult:
             raise ServerError("malformed_response") from e
         txn_id = data.get("transaction_id")
         logger.info("process_payment success account_id=%s txn=%s", account_id, txn_id)
-        event_log.emit("api_response", endpoint="process_payment", status=200, transaction_id=txn_id)
+        event_log.emit(EVENT_API_RESPONSE, endpoint="process_payment", status=200, transaction_id=txn_id)
         return PaymentResult(success=True, transaction_id=txn_id)
 
     if resp.status_code == 422:
@@ -169,7 +185,7 @@ def _process_payment_request(account_id: str, payload: dict) -> PaymentResult:
             raise ServerError("malformed_response") from e
         error_code = data.get("error_code", "unknown_error")
         logger.info("process_payment failure account_id=%s error=%s", account_id, error_code)
-        event_log.emit("api_response", endpoint="process_payment", status=422, error_code=error_code)
+        event_log.emit(EVENT_API_RESPONSE, endpoint="process_payment", status=422, error_code=error_code)
         return PaymentResult(success=False, error_code=error_code)
 
     logger.warning("process_payment unexpected status=%d account_id=%s", resp.status_code, account_id)

@@ -103,6 +103,15 @@ def simulate(persona: Persona) -> SimulationResult:
 def _check_pii(message: str, agent: Agent, result: SimulationResult) -> None:
     from output.pii_filter import contains_pii
     account = agent._conv.account
-    if account and contains_pii(message, account):
+    if account is None:
+        return
+    # The DOB confirm-back ("Just to confirm — your DOB is X. Is that
+    # correct?") echoes the user-provided value so they can verify our
+    # parsing. It is not disclosure of stored account data — the user
+    # just typed it. Skip the leak check during that one prompt; the
+    # production PII filter applies the same exemption.
+    if agent._conv.awaiting_dob_confirmation:
+        return
+    if contains_pii(message, account):
         result.pii_leaked = True
         result.pii_leak_details.append(f"PII found in: {message[:100]}")

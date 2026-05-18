@@ -49,13 +49,24 @@ def verify_identity(conv: ConversationState) -> VerificationResult:
     elif pincode_match:
         which_factor = "pincode"
 
-    from event_log import event_log
+    # Internal-only debug signal: did the name fail only because of case?
+    # Never surfaced to the user (would weaken strict-matching guarantee),
+    # but tells us when the LLM extractor failed to title-case input.
+    name_case_only_mismatch = (
+        not name_match
+        and conv.provided_name is not None
+        and normalize_name(conv.provided_name).casefold()
+        == normalize_name(account.full_name).casefold()
+    )
+
+    from event_log import EVENT_VERIFICATION, event_log
     event_log.emit(
-        "verification",
+        EVENT_VERIFICATION,
         verified=(name_match and secondary_match),
         name_match=name_match,
         name_provided=conv.provided_name,
         name_account=account.full_name,
+        name_case_only_mismatch=name_case_only_mismatch,
         dob_match=dob_match,
         dob_provided=conv.provided_dob,
         dob_account=account.dob,

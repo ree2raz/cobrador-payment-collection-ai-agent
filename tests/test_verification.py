@@ -53,7 +53,7 @@ WRONG_PINCODE = "111111"
     ("Nithin Jain", None,          None,            None,            False),  # name only
     # name=wrong, all secondary combos — all must fail
     ("Nithin J",    ACCOUNT_DOB,   ACCOUNT_AADHAAR, ACCOUNT_PINCODE, False),
-    ("nithin jain", ACCOUNT_DOB,   None,            None,            True),   # case-insensitive match
+    ("nithin jain", ACCOUNT_DOB,   None,            None,            False),  # case-sensitive — brief forbids case-insensitive workaround
     ("Nithin Jain ", ACCOUNT_DOB,  None,            None,            True),   # trailing space normalizes
     (None,          ACCOUNT_DOB,   ACCOUNT_AADHAAR, ACCOUNT_PINCODE, False),  # no name
     ("Nithin Jain", WRONG_DOB,     WRONG_AADHAAR,   WRONG_PINCODE,  False),

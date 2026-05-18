@@ -215,6 +215,26 @@ PAYMENT_FAILED_TERMINAL = (
     "Please contact us through the official number on your notice for assistance. Thank you."
 )
 
+# Used when the user has gone several consecutive turns without providing
+# the information the agent needs to make progress (identity / amount /
+# card). Bounds the refusal loop so the agent doesn't keep re-asking
+# forever — state-specific so the message is actionable.
+NO_PROGRESS_IDENTITY = (
+    "I wasn't able to collect the verification details I need to help you today. "
+    "Please call back through the official number on your notice when you have your "
+    "full name and date of birth, Aadhaar last 4, or pincode ready. Thank you."
+)
+
+NO_PROGRESS_AMOUNT = (
+    "I wasn't able to determine a valid payment amount from our conversation. "
+    "Please call back when you're ready to share the amount you'd like to pay. Thank you."
+)
+
+NO_PROGRESS_CARD = (
+    "I wasn't able to collect the card details needed to process your payment. "
+    "Please call back when you have your card ready. Thank you."
+)
+
 # ── Payment success ─────────────────────────────────────────────────────────
 
 def payment_success(transaction_id: str, amount: Decimal) -> str:

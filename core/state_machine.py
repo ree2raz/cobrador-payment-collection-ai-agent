@@ -6,6 +6,8 @@ from decimal import Decimal
 from enum import Enum, auto
 from typing import Optional
 
+from event_log import EVENT_STATE_TRANSITION, event_log
+
 
 class State(Enum):
     INIT = auto()
@@ -22,6 +24,7 @@ class State(Enum):
     TERMINAL_ACCOUNT_NOT_FOUND = auto()
     TERMINAL_VERIFICATION_FAILED = auto()
     TERMINAL_PAYMENT_FAILED = auto()
+    TERMINAL_NO_PROGRESS = auto()
     USER_ABORTED = auto()
 
 
@@ -29,6 +32,7 @@ TERMINAL_STATES = {
     State.TERMINAL_ACCOUNT_NOT_FOUND,
     State.TERMINAL_VERIFICATION_FAILED,
     State.TERMINAL_PAYMENT_FAILED,
+    State.TERMINAL_NO_PROGRESS,
     State.USER_ABORTED,
     State.CONFIRM_AND_CLOSE,
 }
@@ -50,18 +54,29 @@ ALLOWED_TRANSITIONS: dict[State, set[State]] = {
         State.AWAITING_ACCOUNT_ID,
         State.TERMINAL_ACCOUNT_NOT_FOUND,
     },
-    State.AWAITING_IDENTITY: {State.VERIFYING, State.AWAITING_IDENTITY, State.USER_ABORTED},
+    State.AWAITING_IDENTITY: {
+        State.VERIFYING,
+        State.AWAITING_IDENTITY,
+        State.USER_ABORTED,
+        State.TERMINAL_NO_PROGRESS,
+    },
     State.VERIFYING: {
         State.SHARE_BALANCE,
         State.AWAITING_IDENTITY,
         State.TERMINAL_VERIFICATION_FAILED,
     },
     State.SHARE_BALANCE: {State.AWAITING_AMOUNT, State.AWAITING_CARD, State.CONFIRM_AND_CLOSE},
-    State.AWAITING_AMOUNT: {State.AWAITING_CARD, State.AWAITING_AMOUNT, State.USER_ABORTED},
+    State.AWAITING_AMOUNT: {
+        State.AWAITING_CARD,
+        State.AWAITING_AMOUNT,
+        State.USER_ABORTED,
+        State.TERMINAL_NO_PROGRESS,
+    },
     State.AWAITING_CARD: {
         State.PROCESSING_PAYMENT,
         State.AWAITING_CARD,
         State.TERMINAL_PAYMENT_FAILED,
+        State.TERMINAL_NO_PROGRESS,
         State.USER_ABORTED,
     },
     State.PROCESSING_PAYMENT: {
@@ -73,6 +88,7 @@ ALLOWED_TRANSITIONS: dict[State, set[State]] = {
     State.TERMINAL_ACCOUNT_NOT_FOUND: set(),
     State.TERMINAL_VERIFICATION_FAILED: set(),
     State.TERMINAL_PAYMENT_FAILED: set(),
+    State.TERMINAL_NO_PROGRESS: set(),
     State.USER_ABORTED: set(),
 }
 
@@ -135,9 +151,20 @@ class ConversationState:
     account_lookup_retries: int = 0
     verification_retries: int = 0
     payment_retries: int = 0
+    # Consecutive turns where the user produced no useful field advancement
+    # in identity / amount / card collection. Bounds refusal loops so the
+    # agent doesn't keep re-asking forever when the user never cooperates.
+    no_progress_turns: int = 0
 
     # Completed transaction
     transaction_id: Optional[str] = None
+
+    # Idempotency key for the current payment attempt. Generated when the
+    # user first reaches AWAITING_CARD; reused across tenacity retries and
+    # any client-side card validation re-submits so the upstream processor
+    # treats them as one logical payment. Regenerated only when the user
+    # explicitly starts a new transaction (out of scope here).
+    payment_idempotency_key: Optional[str] = None
 
     # Audit trail (eval reads this)
     transition_log: list[TransitionEvent] = field(default_factory=list)
@@ -150,9 +177,8 @@ class ConversationState:
         self.transition_log.append(
             TransitionEvent(self.state, new_state, trigger, response)
         )
-        from event_log import event_log
         event_log.emit(
-            "state_transition",
+            EVENT_STATE_TRANSITION,
             from_state=self.state.name,
             to_state=new_state.name,
             trigger=trigger,

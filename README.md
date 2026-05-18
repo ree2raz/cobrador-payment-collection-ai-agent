@@ -50,11 +50,17 @@ cobrador/
 │   ├── judge.py           # LLM-as-judge scoring
 │   ├── messy_cases.py     # 21 production-style messy extraction test cases
 │   └── run_eval.py        # Three-tier eval runner CLI
-└── tests/                 # 168 deterministic tests passing + 23 live LLM tests skipped offline
+└── tests/                 # 173 deterministic tests passing + 23 live LLM tests skipped offline
     └── test_extraction_messy.py  # Tier 1.5: live LLM messy extraction tests
 ```
 
 ---
+
+## Evaluation
+
+See [EVALUATION.md](./EVALUATION.md) for the full evaluation approach:
+test-case design, correctness definitions per step, automated eval
+script, and honest observations on where the agent struggles.
 
 ## Running Evaluations
 
@@ -91,10 +97,10 @@ PHOENIX=1 uv run python -m eval.run_eval --tier 3
 | Verification truth table + account-specific cases | 23 | ✅ 100% |
 | State machine transition allow-list | 13 | ✅ 100% |
 | PII filter — DOB/Aadhaar/pincode variants | 17 | ✅ 100% |
-| API payload/retry behavior | 2 | ✅ 100% |
+| API payload/retry/idempotency-key behavior | 4 | ✅ 100% |
 | Identity-regex deterministic pre-extractor | 40 | ✅ 100% |
-| Scripted multi-turn scenarios (all 4 accounts + failure paths) | 28 | ✅ 100% |
-| **Total** | **168** | **✅ 168/168** |
+| Scripted multi-turn scenarios (all 4 accounts + failure paths + no-progress) | 31 | ✅ 100% |
+| **Total** | **173** | **✅ 173/173** |
 
 ### Tier 1.5 — Messy Extraction Accuracy
 

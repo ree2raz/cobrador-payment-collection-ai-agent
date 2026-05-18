@@ -4,8 +4,14 @@ import logging
 from datetime import date
 from decimal import Decimal
 
-from event_log import event_log
-from llm.client import FAST_MODEL, PRIMARY_MODEL, extract_structured
+from event_log import (
+    EVENT_LLM_EXTRACT,
+    event_log,
+    mask_card_number,
+    mask_card_substrings,
+    mask_cvv_substrings,
+)
+from llm.client import PRIMARY_MODEL, extract_structured
 from llm.prompts import (
     ACCOUNT_ID_EXTRACTION,
     AMOUNT_EXTRACTION,
@@ -29,7 +35,17 @@ def _log_extraction(kind: str, user_input: str, result) -> None:
         output = result.model_dump(mode="json") if hasattr(result, "model_dump") else repr(result)
     except Exception:
         output = repr(result)
-    event_log.emit("llm_extract", extractor=kind, input=user_input, output=output)
+    # Brief: "Do not store or log raw card data beyond what is necessary
+    # for the API call." Card data can appear in any extractor's input
+    # when the user front-loads it, so we mask both input and output
+    # regardless of which extractor fired.
+    safe_input = mask_cvv_substrings(mask_card_substrings(user_input))
+    if isinstance(output, dict):
+        if "card_number" in output and output["card_number"]:
+            output["card_number"] = mask_card_number(output["card_number"])
+        if "cvv" in output:
+            output["cvv"] = "***" if output["cvv"] else output["cvv"]
+    event_log.emit(EVENT_LLM_EXTRACT, extractor=kind, input=safe_input, output=output)
 
 
 def extract_account_id(user_input: str) -> AccountIdExtraction:

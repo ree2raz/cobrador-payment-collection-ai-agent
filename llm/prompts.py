@@ -33,26 +33,35 @@ IDENTITY_EXTRACTION = (
     "{already_collected}\n\n"
     "RULES:\n"
     "1. Extract every identity field the user explicitly stated, even if the message ALSO "
-    "contains unrelated information like an account ID, a payment amount, or a greeting. "
-    "Case-insensitive — names may be lowercase ('i am nithin jain' → 'Nithin Jain'). "
-    "Title-case the extracted name.\n"
-    "2. For names: strip common honorifics (Mr., Mrs., Ms., Dr., Sir, Madam) from the "
+    "contains unrelated information like an account ID, a payment amount, or a greeting.\n"
+    "2. NAME CASING (CRITICAL): the extracted full_name MUST be Title-Case "
+    "(each word capitalized: 'Rahul Mehta', not 'rahul mehta' or 'RAHUL MEHTA'). "
+    "Users often type their names in lowercase or all-caps; you MUST convert to "
+    "Title-Case before returning. Verification is strict case-sensitive, so a "
+    "lowercase return value will cause incorrect verification failure. "
+    "Examples: 'i am nithin jain' → 'Nithin Jain'; 'RAHUL MEHTA HERE' → "
+    "'Rahul Mehta'; 'priya agarwal' → 'Priya Agarwal'.\n"
+    "3. For names: strip common honorifics (Mr., Mrs., Ms., Dr., Sir, Madam) from the "
     "extracted name. Trim whitespace. If the user gives a nickname and a full name "
     "(e.g. 'call me Raja but my full name is Rajarajeswari Balasubramaniam'), extract "
     "the FULL name, not the nickname.\n"
-    "3. For DOB: only set dob if you are certain of day, month AND year. If the format "
+    "4. For DOB: only set dob if you are certain of day, month AND year. If the format "
     "could be DD-MM or MM-DD (e.g. '01-02-1990'), set dob = null and dob_ambiguous = true.\n"
-    "4. For Aadhaar: extract only the last 4 digits. If user states their full 12-digit "
+    "5. For Aadhaar: extract only the last 4 digits. If user states their full 12-digit "
     "Aadhaar, extract only the last 4 — NEVER output the full number.\n"
-    "5. For pincode: must be exactly 6 digits.\n"
-    "6. user_intent: classify the primary purpose of their message.\n"
-    '7. If user says "stop", "cancel", "quit", "end" → user_intent = "wants_to_cancel".\n\n'
+    "6. For pincode: must be exactly 6 digits.\n"
+    "7. user_intent: classify the primary purpose of their message.\n"
+    '8. If user says "stop", "cancel", "quit", "end" → user_intent = "wants_to_cancel".\n\n'
     "EXAMPLES:\n"
     '"my name is Nithin Jain and DOB 14th May 1990"\n'
     '→ {{"full_name": "Nithin Jain", "dob": "1990-05-14", "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
     '"Hi i am nithin jain, my account id is acc1001, my dob is 14 may 1990"\n'
     '→ {{"full_name": "Nithin Jain", "dob": "1990-05-14", "dob_ambiguous": false, '
+    '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
+    "// Lowercase-name input — MUST be returned Title-Cased:\n"
+    '"hi i am rahul mehta i want to pay 3500"\n'
+    '→ {{"full_name": "Rahul Mehta", "dob": null, "dob_ambiguous": false, '
     '"aadhaar_last4": null, "pincode": null, "user_intent": "providing_info"}}\n\n'
     '"Mr. Rahul Mehta here, aadhaar ends 9876"\n'
     '→ {{"full_name": "Rahul Mehta", "dob": null, "dob_ambiguous": false, '

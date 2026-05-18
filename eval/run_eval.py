@@ -158,6 +158,7 @@ def run_tier3(persona_filter: list[str] | None = None) -> dict:
                 "turns": len(result.turns),
                 "completed": result.completed,
                 "pii_leaked": result.pii_leaked,
+                "pii_leak_details": result.pii_leak_details,
                 "task_completion": score.task_completion,
                 "politeness": score.politeness,
                 "clarity": score.clarity,
@@ -165,6 +166,9 @@ def run_tier3(persona_filter: list[str] | None = None) -> dict:
                 "efficiency": score.efficiency,
                 "issues": score.issues,
                 "notes": score.overall_notes,
+                "transcript": [
+                    {"user": t.user, "agent": t.agent} for t in result.turns
+                ],
             }
             all_scores.append(row)
             summary_rows.append(row)

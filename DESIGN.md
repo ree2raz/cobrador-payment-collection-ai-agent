@@ -48,7 +48,7 @@ User Input
 └─────────────────────────────────────────────────────────┘
 ```
 
-**State flow**: `INIT → AWAITING_ACCOUNT_ID → LOOKING_UP_ACCOUNT → AWAITING_IDENTITY → VERIFYING → SHARE_BALANCE → AWAITING_AMOUNT → AWAITING_CARD → PROCESSING_PAYMENT → CONFIRM_AND_CLOSE | TERMINAL_*`
+**State flow**: `INIT → AWAITING_ACCOUNT_ID → LOOKING_UP_ACCOUNT → AWAITING_IDENTITY → VERIFYING → SHARE_BALANCE → AWAITING_AMOUNT → AWAITING_CARD → PROCESSING_PAYMENT → CONFIRM_AND_CLOSE | TERMINAL_{ACCOUNT_NOT_FOUND, VERIFICATION_FAILED, PAYMENT_FAILED, NO_PROGRESS, USER_ABORTED}`
 
 ---
 
@@ -60,7 +60,8 @@ User Input
 | LLM scope | Per-state structured extraction only | Each prompt is single-purpose, few-shot, and pydantic-typed. Smaller prompts = higher accuracy + cheap unit-testability |
 | Extraction backup | Deterministic regex pre-extractor | Reasoning models can silently drop fields in compound messages. `core/identity_regex.py` catches labeled patterns (name/DOB/Aadhaar/pincode) before the LLM runs; LLM fills gaps for unlabeled forms |
 | Opportunistic capture | Each handler harvests volunteered info regardless of FSM position | Honors brief rule "do not re-ask for info already provided" without violating "do not skip steps" — fields are captured early, but FSM still walks every state in order |
-| Name matching | Unicode-NFC + casefold exact match | "Strict matching" per the brief = no fuzzy / edit-distance / substring. Case is not a meaningful identity signal — it can't be heard on a voice channel, and users typing lowercase in text is the norm. NFC+casefold preserves the no-fuzzy invariant while removing a silent failure mode |
+| Name matching | Unicode-NFC, **case-sensitive** exact match | Brief explicitly forbids "case-insensitive workarounds for names". Messy lowercase / all-caps input is normalized to Title-Case in the LLM extractor (per the brief's guidance: the LLM is what handles messy natural language) — verification stays strict. An internal `name_case_only_mismatch` flag in the event log surfaces LLM-side normalization failures without ever leaking the cause to the user |
+| Retry message factor-agnostic | "Details don't match — please re-check your full name. If unsure about DOB, try Aadhaar last 4 / pincode." | Brief only lists DOB/Aadhaar/pincode as protected (not name), so naming the failing field is not a literal violation — but it tells an attacker which secondary factor they got right, enabling elimination attacks across 3 retries. Industry-standard collections practice: never reveal which factor failed. The retry message still guides the cooperative user to re-check name and offers an alternate secondary factor if uncertain |
 | Verification retries | 3 attempts; **fields retained** across retries | A typo in one field (typically the name) is the most common failure mode for cooperative users. Wiping all fields forces re-confirmation of DOB the user already validated. The next-turn extractor overwrites whichever field they re-state; `verification_retries` counter still bounds brute-force attempts |
 | Retry message | Suggests trying an alternate secondary factor | Can't reveal which field was wrong (privacy), but the message tells the user they can switch from DOB to Aadhaar/pincode if uncertain |
 | Question handling | Asking a question during account-ID collection does **not** burn a retry | Distinguishes cooperative-but-confused users from junk input. Only an attempted-but-unparseable ID counts against the lookup-retry budget |
@@ -89,7 +90,8 @@ User Input
 | LLM/network blip mid-turn | Top-level `except Exception` in `next()` | "Brief hiccup — please repeat" | State unchanged; no retry burned |
 | Empty / silent turn | Length check before LLM call | State-appropriate re-prompt | State unchanged; no LLM call, no retry burned |
 | User says "cancel" | Schema `user_intent="wants_to_cancel"` in any extractor | Polite close | Terminal `USER_ABORTED` |
-| Prompt injection attempt | Templated responses + LLM scope confined to extraction | Doesn't disclose stored data | Continues normally |
+| Prompt injection attempt | Templated responses + LLM scope confined to extraction | Doesn't disclose stored data | Continues normally; closes via no-progress if user never cooperates |
+| User refuses to provide info (5+ turns) | `no_progress_turns` counter in identity / amount / card collection | State-specific "please call back when ready" | Terminal `TERMINAL_NO_PROGRESS` |
 
 ---
 
@@ -105,7 +107,7 @@ User Input
 | Card details collected as plain text | Text/voice interface has no secure input channel; production would use tokenization (e.g. Stripe.js) so raw card data never reaches the agent |
 | Card fields retained across turns inside `ConversationState.card` | Partial collection UX. Mitigations: card object dropped immediately after API call, never logged or serialized, offending field cleared on each validation failure, PII filter inspects every outgoing message |
 | Verification retry retains all fields | Better UX for cooperative typo-recovery (real failure mode) at the cost of letting an attacker observe whether the *combination* failed rather than each field individually. The `verification_retries=3` cap still bounds brute force; the agent never says which field was wrong |
-| No payment-API idempotency key | Sandbox-only constraint; in production an idempotency key from the upstream processor must be attached so a network retry doesn't double-charge. Currently we do **not** auto-retry post-submit network failures for this reason — the user sees a clear error and decides to retry manually |
+| Payment idempotency key sent as `Idempotency-Key` header | A UUID is generated at every `_do_payment` entry and reused across tenacity-driven retries within that single call. The sandbox ignores it; production processors (Stripe / Razorpay) require it to safely collapse network-blip retries into one logical charge. A *different* card re-entry generates a *new* key because it represents a genuinely new payment intent |
 
 ---
 

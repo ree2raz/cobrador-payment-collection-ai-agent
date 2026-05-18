@@ -59,6 +59,60 @@ def test_process_payment_retries_server_error_and_sends_expected_payload(monkeyp
     assert b'"cvv":"123"' in payload
 
 
+def test_process_payment_includes_idempotency_key_header_and_reuses_on_retry(monkeypatch):
+    """Both the initial attempt and the tenacity-driven retry must send
+    the same Idempotency-Key, so the upstream processor can collapse a
+    network-blip retry into a single logical charge."""
+    client_factory, requests = _client_factory_for_statuses([
+        (500, {"error": "temporary"}),
+        (200, {"success": True, "transaction_id": "txn_TEST_IDEMP"}),
+    ])
+    monkeypatch.setattr(payment_api, "_make_client", client_factory)
+    monkeypatch.setattr(
+        payment_api,
+        "_process_payment_request",
+        payment_api._process_payment_request.retry_with(wait=wait_none()),
+    )
+
+    result = payment_api.process_payment(
+        "ACC1001",
+        Decimal("500.00"),
+        CardDetails(
+            card_number="4532015112830366",
+            cvv="123",
+            expiry_month=12,
+            expiry_year=2027,
+            cardholder_name="Nithin Jain",
+        ),
+        idempotency_key="key_abc123",
+    )
+
+    assert result.success is True
+    assert len(requests) == 2
+    # Header present on both attempts and identical
+    assert requests[0].headers.get("Idempotency-Key") == "key_abc123"
+    assert requests[1].headers.get("Idempotency-Key") == "key_abc123"
+
+
+def test_process_payment_omits_idempotency_header_when_not_provided(monkeypatch):
+    """Backward compat: caller may omit the key (e.g. unit tests). No header
+    is sent in that case rather than sending a blank string."""
+    client_factory, requests = _client_factory_for_statuses([
+        (200, {"success": True, "transaction_id": "txn_TEST_NO_IDEMP"}),
+    ])
+    monkeypatch.setattr(payment_api, "_make_client", client_factory)
+
+    payment_api.process_payment(
+        "ACC1001",
+        Decimal("500.00"),
+        CardDetails(
+            card_number="4532015112830366", cvv="123",
+            expiry_month=12, expiry_year=2027, cardholder_name="Nithin Jain",
+        ),
+    )
+    assert "Idempotency-Key" not in requests[0].headers
+
+
 def test_lookup_malformed_json_retries(monkeypatch):
     client_factory, requests = _client_factory_for_statuses([
         (200, "{not-json"),

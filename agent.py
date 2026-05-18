@@ -4,73 +4,77 @@ Payment Collection Agent — Cobrador
 Architecture: Deterministic FSM owns all flow control. LLM is used only for
 structured extraction of messy natural language into typed fields. Templated
 responses are used for 90% of agent output (deterministic, testable, PII-safe).
+
+This file holds the Agent class shape:
+- public `next()` entry point with PII redaction post-processor
+- top-level dispatcher (`_process`)
+- lifecycle helpers (progress tracking, no-progress termination)
+
+Per-state handler methods live in `handlers.py`; we inherit them as a
+mixin so this file reads as "what the agent IS" and the other reads as
+"what the agent DOES per state". Tests patch handler-level symbols
+through `agent.<name>` (e.g. `agent.lookup_account`) — those names are
+re-exported below for backward compatibility.
 """
 from __future__ import annotations
 
 import logging
-import re
-from decimal import Decimal
 
-_IDENTITY_KEYWORDS = re.compile(
-    r"\b(name|i\s*am|i'?m|this\s+is|dob|date\s+of\s+birth|d\.?o\.?b\.?|born|"
-    r"aadhaar|adhaar|pincode|pin\s*code|naam|janam)\b",
-    re.IGNORECASE,
+from event_log import (
+    EVENT_CONVERSATION_START,
+    EVENT_TURN_END,
+    EVENT_TURN_ERROR,
+    EVENT_TURN_START,
+    event_log,
+    mask_card_substrings,
+    mask_cvv_substrings,
 )
-
-from event_log import event_log, mask_card_number
-from core.identity_regex import IdentityHints, extract_identity_hints
 from core.state_machine import (
-    CardDetails,
     ConversationState,
     InvalidTransitionError,
     State,
     TERMINAL_STATES,
 )
-from core.validators import (
-    luhn_check,
-    validate_amount,
-    validate_cvv,
-    validate_expiry,
-)
-from core.verification import verify_identity
-from llm.extractors import (
-    extract_account_id,
-    extract_amount,
-    extract_card,
-    extract_dob_confirmation,
-    extract_identity,
-)
+from handlers import _CollectionHandlers
 from output import responses as R
 from output.pii_filter import redact_pii
-from tools.payment_api import PaymentResult, ServerError, lookup_account, process_payment
 
 logger = logging.getLogger(__name__)
 
-MAX_VERIFICATION_RETRIES = 3
-MAX_ACCOUNT_LOOKUP_RETRIES = 3
-MAX_PAYMENT_RETRIES = 3
+# Consecutive turns with zero useful progress before we close gracefully.
+# Five is generous: a cooperative user always makes progress every turn;
+# this only kicks in for refusal loops / prompt-injection attempts where
+# the user is never going to provide what we need.
+MAX_NO_PROGRESS_TURNS = 5
 
-RETRYABLE_PAYMENT_ERRORS = {"invalid_card", "invalid_cvv", "invalid_expiry", "server_error"}
+# States where the no-progress counter applies (the three collection loops)
+_NO_PROGRESS_STATES = {
+    "AWAITING_IDENTITY",
+    "AWAITING_AMOUNT",
+    "AWAITING_CARD",
+}
 
 
-class Agent:
+class Agent(_CollectionHandlers):
     def __init__(self) -> None:
         self._conv = ConversationState()
         event_log.new_conversation()
-        event_log.emit("conversation_start")
+        event_log.emit(EVENT_CONVERSATION_START)
 
     def next(self, user_input: str) -> dict:
         """Process one turn. Returns {"message": str}.
 
-        Wraps _process in an exception boundary: upstream/transient exceptions
-        (OpenAI error, network blip, schema-parse failure, etc.) are logged and
-        rendered as a generic retry message. Internal FSM invariant failures are
-        re-raised so tests and operators see real code bugs."""
+        Wraps `_process` in an exception boundary: upstream/transient
+        exceptions (OpenAI error, network blip, schema-parse failure, etc.)
+        are logged and rendered as a generic retry message. Internal FSM
+        invariant failures are re-raised so tests and operators see real
+        code bugs."""
         user_input = user_input.strip()
+        progress_snapshot_before = self._progress_snapshot()
         event_log.emit(
-            "turn_start",
+            EVENT_TURN_START,
             state=self._conv.state.name,
-            user_input=user_input,
+            user_input=mask_cvv_substrings(mask_card_substrings(user_input)),
             provided_name=self._conv.provided_name,
             provided_dob=self._conv.provided_dob,
             provided_aadhaar4=self._conv.provided_aadhaar4,
@@ -82,13 +86,13 @@ class Agent:
             response = self._process(user_input)
         except (InvalidTransitionError, AssertionError):
             logger.exception("Internal state invariant failed (state=%s)", self._conv.state)
-            event_log.emit("turn_error", state=self._conv.state.name, kind="invariant")
+            event_log.emit(EVENT_TURN_ERROR, state=self._conv.state.name, kind="invariant")
             raise
         except Exception as exc:
             logger.exception(
                 "Unhandled error in turn (state=%s): %s", self._conv.state, exc
             )
-            event_log.emit("turn_error", state=self._conv.state.name, error=repr(exc))
+            event_log.emit(EVENT_TURN_ERROR, state=self._conv.state.name, error=repr(exc))
             response = R.TRANSIENT_ERROR
         # Final PII redaction layer — defense in depth. Allow DOB readback
         # only while we're prompting the customer to confirm the date we
@@ -98,9 +102,63 @@ class Agent:
             self._conv.account,
             allow_dob_readback=self._conv.awaiting_dob_confirmation,
         )
+
+        # No-progress check: if we're still in a collection state and
+        # nothing useful changed in the snapshot, bump the counter and
+        # close gracefully at the threshold. Cooperative users always
+        # advance at least one field per turn.
+        if (
+            self._conv.state.name in _NO_PROGRESS_STATES
+            and progress_snapshot_before == self._progress_snapshot()
+        ):
+            self._conv.no_progress_turns += 1
+            if self._conv.no_progress_turns >= MAX_NO_PROGRESS_TURNS:
+                response = self._terminate_no_progress()
+        else:
+            self._conv.no_progress_turns = 0
+
         logger.debug("state=%s response=%r", self._conv.state, response[:80])
-        event_log.emit("turn_end", state=self._conv.state.name, response=response)
+        event_log.emit(EVENT_TURN_END, state=self._conv.state.name, response=response)
         return {"message": response}
+
+    # ── Lifecycle helpers ───────────────────────────────────────────────────
+
+    def _progress_snapshot(self) -> tuple:
+        """Snapshot of fields that count as 'progress'. Two equal snapshots
+        across a turn means the user produced nothing useful."""
+        c = self._conv
+        card = c.card
+        card_tuple = (
+            (card.card_number, card.cvv, card.expiry_month, card.expiry_year, card.cardholder_name)
+            if card else None
+        )
+        return (
+            c.state,
+            c.account_id,
+            c.provided_name,
+            c.provided_dob,
+            c.provided_aadhaar4,
+            c.provided_pincode,
+            c.pending_dob,
+            c.awaiting_dob_confirmation,
+            c.payment_amount,
+            c.volunteered_amount_over_balance,
+            card_tuple,
+            c.verification_retries,
+            c.account_lookup_retries,
+            c.payment_retries,
+        )
+
+    def _terminate_no_progress(self) -> str:
+        state_name = self._conv.state.name
+        if state_name == "AWAITING_IDENTITY":
+            msg = R.NO_PROGRESS_IDENTITY
+        elif state_name == "AWAITING_AMOUNT":
+            msg = R.NO_PROGRESS_AMOUNT
+        else:
+            msg = R.NO_PROGRESS_CARD
+        self._conv.transition(State.TERMINAL_NO_PROGRESS, trigger="no_progress")
+        return msg
 
     # ── Main dispatch ───────────────────────────────────────────────────────
 
@@ -111,30 +169,8 @@ class Agent:
         if state in TERMINAL_STATES:
             return R.CLOSING if state == State.CONFIRM_AND_CLOSE else R.ABORTED
 
-        # INIT — first turn. If the user volunteered an account ID (and possibly
-        # identity fields) in the opening message, process it instead of wasting
-        # a turn on a pure greeting. Brief rule: never re-ask for info the user
-        # already provided. A bare greeting falls through to the greeting
-        # response without counting as a failed account-lookup attempt.
         if state == State.INIT:
-            self._conv.transition(State.AWAITING_ACCOUNT_ID, trigger="first_turn")
-            if not user_input:
-                return R.GREETING
-            extraction = extract_account_id(user_input)
-            if extraction.user_intent == "wants_to_cancel":
-                self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-                return R.ABORTED
-            if extraction.account_id is None:
-                # Greeting / chit-chat with no account ID — don't burn a retry.
-                # Still stash any volunteered name/aadhaar/pincode so we don't
-                # re-ask once verification starts. DOB intentionally skipped:
-                # without an account we can't run the confirm-back flow, and
-                # the user will re-state it when asked.
-                self._stash_identity_no_dob(user_input)
-                return R.GREETING
-            self._conv.account_id = extraction.account_id
-            response = self._do_lookup()
-            return self._maybe_opportunistic(user_input, response)
+            return self._handle_init(user_input)
 
         if state == State.AWAITING_ACCOUNT_ID:
             return self._handle_account_id(user_input)
@@ -151,637 +187,3 @@ class Agent:
         # Should never reach here for valid states
         logger.error("Unhandled state %s", state)
         return R.FALLBACK
-
-    # ── Account ID handler ──────────────────────────────────────────────────
-
-    def _handle_account_id(self, user_input: str) -> str:
-        # Silent / empty turn — don't waste an LLM call or burn a retry. Just
-        # re-prompt. (A real account ID is at least 4 characters: "ACC" + digit.)
-        if not user_input or len(user_input.strip()) < 3:
-            return R.ASK_ACCOUNT_ID
-
-        extraction = extract_account_id(user_input)
-
-        if extraction.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
-
-        if extraction.account_id is None:
-            # Stash any volunteered identity so we don't re-ask later.
-            self._stash_identity_no_dob(user_input)
-            # Asking a question shouldn't burn a retry — only an
-            # attempted-but-unparseable account ID should.
-            if extraction.user_intent == "asking_question":
-                return R.ASK_ACCOUNT_ID
-            self._conv.account_lookup_retries += 1
-            if self._conv.account_lookup_retries >= MAX_ACCOUNT_LOOKUP_RETRIES:
-                self._conv.transition(State.TERMINAL_ACCOUNT_NOT_FOUND, trigger="max_id_retries")
-                return R.ACCOUNT_LOOKUP_FAILED
-            return R.ASK_ACCOUNT_ID
-
-        # Have an account ID — attempt lookup
-        self._conv.account_id = extraction.account_id
-        response = self._do_lookup()
-        return self._maybe_opportunistic(user_input, response)
-
-    def _maybe_opportunistic(self, user_input: str, default_response: str) -> str:
-        """After a successful account lookup, rescan the user's message for
-        volunteered identity / amount / card details so we don't re-ask for
-        info they already provided. Used by both the INIT branch (turn-1
-        compound message) and _handle_account_id (post-greeting compound
-        message — the simulator framework always sends 'hello' as a seed,
-        so the compound arrives in AWAITING_ACCOUNT_ID, not INIT).
-        """
-        if self._conv.state != State.AWAITING_IDENTITY:
-            return default_response
-        self._opportunistic_payment_details(user_input)
-        opportunistic = self._opportunistic_identity(user_input)
-        return opportunistic if opportunistic is not None else default_response
-
-    def _do_lookup(self) -> str:
-        assert self._conv.account_id is not None
-        self._conv.transition(State.LOOKING_UP_ACCOUNT, trigger="start_lookup")
-
-        try:
-            result = lookup_account(self._conv.account_id)
-        except ServerError:
-            # Distinct from account-not-found: tenacity already retried 3x,
-            # so the API is genuinely down. Use a different message so the
-            # caller knows it's a technical issue, not a security signal.
-            self._conv.transition(State.TERMINAL_ACCOUNT_NOT_FOUND, trigger="lookup_server_error")
-            return R.LOOKUP_TRANSIENT_ERROR
-        except Exception as exc:
-            # Defense in depth: any unexpected error (JSON decode, library bug,
-            # etc.) is treated like a server error so we never strand the agent
-            # in LOOKING_UP_ACCOUNT. The generic terminal message does not
-            # reveal whether the failure was technical or account-not-found.
-            logger.exception("lookup_account unexpected error: %s", exc)
-            self._conv.transition(State.TERMINAL_ACCOUNT_NOT_FOUND, trigger="lookup_unexpected_error")
-            return R.ACCOUNT_LOOKUP_FAILED
-
-        if not result.success:
-            self._conv.account_lookup_retries += 1
-            if self._conv.account_lookup_retries >= MAX_ACCOUNT_LOOKUP_RETRIES:
-                self._conv.transition(State.TERMINAL_ACCOUNT_NOT_FOUND, trigger="max_lookup_retries")
-                return R.ACCOUNT_LOOKUP_FAILED
-            self._conv.account_id = None  # clear so user must re-enter
-            self._conv.transition(State.AWAITING_ACCOUNT_ID, trigger="account_not_found_retry")
-            return R.ACCOUNT_NOT_FOUND
-
-        self._conv.account = result.account
-        self._conv.transition(State.AWAITING_IDENTITY, trigger="lookup_success")
-        return self._ask_identity()
-
-    # ── Identity handler ────────────────────────────────────────────────────
-
-    def _handle_identity(self, user_input: str) -> str:
-        # DOB confirmation sub-flow
-        if self._conv.awaiting_dob_confirmation:
-            return self._handle_dob_confirmation(user_input)
-
-        # Silent/empty turn — re-prompt without burning an LLM call.
-        if not user_input:
-            return self._ask_identity()
-
-        # Compound capture: user may also volunteer payment amount / card
-        # details in the same message. Capture them now so we don't re-ask
-        # after verification.
-        self._opportunistic_payment_details(user_input)
-
-        already = {
-            "full_name": self._conv.provided_name,
-            "dob": self._conv.provided_dob,
-            "aadhaar_last4": self._conv.provided_aadhaar4,
-            "pincode": self._conv.provided_pincode,
-        }
-        extraction = extract_identity(user_input, already)
-
-        if extraction.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
-
-        # Merge newly extracted fields (don't overwrite existing with None)
-        if extraction.full_name is not None:
-            self._conv.provided_name = extraction.full_name
-        if extraction.aadhaar_last4 is not None:
-            self._conv.provided_aadhaar4 = extraction.aadhaar_last4
-        if extraction.pincode is not None:
-            self._conv.provided_pincode = extraction.pincode
-
-        # DOB: if extracted and unambiguous, enter confirm-back flow
-        if extraction.dob is not None and not extraction.dob_ambiguous:
-            self._conv.pending_dob = extraction.dob
-            self._conv.awaiting_dob_confirmation = True
-            return R.dob_confirm_prompt(extraction.dob)
-
-        if extraction.dob_ambiguous:
-            return R.dob_ambiguous_prompt()
-
-        # Check if we have everything needed
-        if self._conv.has_enough_identity():
-            return self._do_verification()
-
-        return self._ask_identity()
-
-    def _handle_dob_confirmation(self, user_input: str) -> str:
-        assert self._conv.pending_dob is not None
-        # Silent/empty turn — just re-prompt confirmation.
-        if not user_input:
-            return R.dob_confirm_prompt(self._conv.pending_dob)
-        # Compound capture: user may say "yes, and my pincode is 400001" or
-        # "yes, I want to pay 400". Pick up volunteered fields alongside the
-        # confirmation answer.
-        self._opportunistic_payment_details(user_input)
-        confirmation = extract_dob_confirmation(user_input, self._conv.pending_dob)
-
-        if confirmation.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
-
-        if confirmation.user_intent == "confirmed":
-            self._conv.provided_dob = self._conv.pending_dob
-            self._conv.pending_dob = None
-            self._conv.awaiting_dob_confirmation = False
-
-            if self._conv.has_enough_identity():
-                return self._do_verification()
-            return self._ask_identity()
-
-        if confirmation.user_intent == "denied":
-            # User said the date is wrong — clear and ask again
-            self._conv.pending_dob = None
-            self._conv.awaiting_dob_confirmation = False
-            return R.dob_ambiguous_prompt()
-
-        # Unclear — ask again
-        assert self._conv.pending_dob is not None
-        return R.dob_confirm_prompt(self._conv.pending_dob)
-
-    def _do_verification(self) -> str:
-        self._conv.transition(State.VERIFYING, trigger="identity_collected")
-        result = verify_identity(self._conv)
-
-        if result.verified:
-            self._conv.transition(State.SHARE_BALANCE, trigger="verified")
-            balance = self._conv.account.balance  # type: ignore[union-attr]
-            if balance == Decimal("0"):
-                self._conv.transition(State.CONFIRM_AND_CLOSE, trigger="zero_balance")
-                return R.balance_announcement(balance)
-            if self._conv.payment_amount is not None:
-                response = R.balance_announcement_with_amount(balance, self._conv.payment_amount)
-                self._conv.transition(State.AWAITING_CARD, trigger="balance_shared_amount_precollected")
-                return f"{response} {self._card_prompt_after_amount(precollected_amount=False)}"
-            if self._conv.volunteered_amount_over_balance is not None:
-                attempted = self._conv.volunteered_amount_over_balance
-                self._conv.volunteered_amount_over_balance = None
-                self._conv.transition(State.AWAITING_AMOUNT, trigger="balance_shared_over_balance")
-                return R.balance_announcement_over_amount(balance, attempted)
-            self._conv.transition(State.AWAITING_AMOUNT, trigger="balance_shared")
-            return R.balance_announcement(balance)
-
-        # Verification failed
-        self._conv.verification_retries += 1
-        if self._conv.verification_retries >= MAX_VERIFICATION_RETRIES:
-            self._conv.transition(State.TERMINAL_VERIFICATION_FAILED, trigger="max_verify_retries")
-            return R.VERIFICATION_FAILED_TERMINAL
-
-        # Keep the fields the user already provided intact. Wiping everything
-        # would force the user to re-confirm DOB / re-state secondary factor
-        # even when only one field (e.g. name) was the actual mismatch — the
-        # next-turn extractor overwrites whichever field they re-state. The
-        # verification_retries counter still bounds abuse.
-        self._conv.pending_dob = None
-        self._conv.awaiting_dob_confirmation = False
-
-        self._conv.transition(State.AWAITING_IDENTITY, trigger="verify_failed_retry")
-        attempts_left = MAX_VERIFICATION_RETRIES - self._conv.verification_retries
-        return R.verification_failed_retry(attempts_left)
-
-    def _opportunistic_identity(self, user_input: str) -> str | None:
-        """Harvest identity fields from a message whose primary intent was
-        something else (account ID on turn 1, or the same after a 'hello'
-        seed turn). Returns the next-step user-facing message if any field
-        was captured, else None to fall back to the caller's default response.
-
-        Two layers: a deterministic regex pre-extractor for labeled patterns
-        ("name X", "DOB Y", "aadhaar last 4 Z") and an LLM fallback for
-        messy/Hinglish forms. The regex is the belt-and-suspenders for
-        reasoning-model flakiness: gpt-5.4 sometimes picks a single "primary
-        intent" for a dense compound message and skips identity fields. The
-        regex never misses an explicit pattern. We only escalate to the LLM
-        when the message clearly mentions identity-related keywords that the
-        regex might have failed to parse — this keeps the opportunistic path
-        free of spurious LLM calls on messages like "ACC1001".
-        """
-        hints = extract_identity_hints(user_input)
-
-        # Call the LLM whenever the message has identity-related keywords —
-        # the regex only catches a subset (Title-Case names, labeled patterns).
-        # E.g. "i am nithin jain" (lowercase, after "i am") slips past
-        # _NAME_RE but is trivial for the LLM. We previously short-circuited
-        # the LLM if regex caught *any* field, which silently dropped the
-        # other fields in compound messages.
-        name = hints.full_name
-        dob = hints.dob
-        dob_ambiguous = hints.dob_ambiguous
-        aadhaar4 = hints.aadhaar_last4
-        pincode = hints.pincode
-
-        if _IDENTITY_KEYWORDS.search(user_input):
-            already = {
-                "full_name": self._conv.provided_name,
-                "dob": self._conv.provided_dob,
-                "aadhaar_last4": self._conv.provided_aadhaar4,
-                "pincode": self._conv.provided_pincode,
-            }
-            try:
-                extraction = extract_identity(user_input, already)
-            except Exception as exc:
-                logger.warning("opportunistic extract_identity failed: %s", exc)
-                extraction = None
-            if extraction is not None:
-                # Respect cancel intent if the LLM detected it from the
-                # compound message (e.g. "stop, never mind my name is …").
-                if extraction.user_intent == "wants_to_cancel":
-                    self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-                    return R.ABORTED
-                name = extraction.full_name or name
-                dob = extraction.dob or dob
-                dob_ambiguous = dob_ambiguous or (extraction.dob_ambiguous and dob is None)
-                aadhaar4 = extraction.aadhaar_last4 or aadhaar4
-                pincode = extraction.pincode or pincode
-
-        captured = any((name, dob, aadhaar4, pincode)) or dob_ambiguous
-        if not captured:
-            return None
-
-        if name is not None:
-            self._conv.provided_name = name
-        if aadhaar4 is not None:
-            self._conv.provided_aadhaar4 = aadhaar4
-        if pincode is not None:
-            self._conv.provided_pincode = pincode
-
-        if dob is not None and not dob_ambiguous:
-            self._conv.pending_dob = dob
-            self._conv.awaiting_dob_confirmation = True
-            return R.dob_confirm_prompt(dob)
-
-        if dob_ambiguous:
-            return R.dob_ambiguous_prompt()
-
-        if self._conv.has_enough_identity():
-            return self._do_verification()
-        return self._ask_identity()
-
-    def _stash_identity_no_dob(self, user_input: str) -> None:
-        """Stash name/aadhaar/pincode volunteered before we have an account.
-        DOB is intentionally skipped — we can't run the confirm-back flow
-        without an account, and the user will re-state it naturally when
-        asked for identity. Only fills empty fields; never overwrites.
-        """
-        hints = extract_identity_hints(user_input)
-        name = hints.full_name
-        aadhaar4 = hints.aadhaar_last4
-        pincode = hints.pincode
-        if _IDENTITY_KEYWORDS.search(user_input):
-            try:
-                extraction = extract_identity(
-                    user_input,
-                    {"full_name": None, "dob": None, "aadhaar_last4": None, "pincode": None},
-                )
-            except Exception as exc:
-                logger.warning("turn-1 identity stash extract failed: %s", exc)
-                extraction = None
-            if extraction is not None:
-                name = name or extraction.full_name
-                aadhaar4 = aadhaar4 or extraction.aadhaar_last4
-                pincode = pincode or extraction.pincode
-        if name and self._conv.provided_name is None:
-            self._conv.provided_name = name
-        if aadhaar4 and self._conv.provided_aadhaar4 is None:
-            self._conv.provided_aadhaar4 = aadhaar4
-        if pincode and self._conv.provided_pincode is None:
-            self._conv.provided_pincode = pincode
-
-    def _opportunistic_payment_details(self, user_input: str) -> None:
-        """Capture volunteered payment details without advancing payment flow.
-
-        This preserves context from users who front-load "pay 500 on this card"
-        while still enforcing the mandatory order: lookup -> verification ->
-        balance announcement -> payment.
-        """
-        account = self._conv.account
-        if account is None:
-            return
-
-        if self._looks_like_amount_input(user_input):
-            amount_extraction = extract_amount(user_input, account.balance)
-            if amount_extraction.user_intent != "wants_to_cancel":
-                if amount_extraction.wants_full_balance:
-                    amount = account.balance
-                else:
-                    amount = amount_extraction.amount
-                if amount is not None:
-                    err = validate_amount(amount, account.balance)
-                    if err is None:
-                        self._conv.payment_amount = amount
-                    elif err == "insufficient_balance":
-                        # Stash so we can acknowledge at balance-announcement
-                        # time instead of silently asking "how much" again.
-                        self._conv.volunteered_amount_over_balance = amount
-
-        if not self._looks_like_card_input(user_input):
-            return
-        card_extraction = extract_card(user_input, {})
-        if card_extraction.user_intent == "wants_to_cancel":
-            return
-        if not any(
-            (
-                card_extraction.card_number,
-                card_extraction.cvv,
-                card_extraction.expiry_month,
-                card_extraction.expiry_year,
-                card_extraction.cardholder_name,
-            )
-        ):
-            return
-        self._conv.card = CardDetails(
-            card_number=card_extraction.card_number or "",
-            cvv=card_extraction.cvv or "",
-            expiry_month=card_extraction.expiry_month or 0,
-            expiry_year=card_extraction.expiry_year or 0,
-            cardholder_name=card_extraction.cardholder_name or "",
-        )
-
-    @staticmethod
-    def _looks_like_card_input(user_input: str) -> bool:
-        # Require an explicit card-related keyword. A pure digit-count rule
-        # (e.g. >=13) fires spuriously when identity + amount digits stack up
-        # — DOB (8) + account ID digits + Aadhaar (4) + pincode (6) easily
-        # exceeds 13 with no card present.
-        lowered = user_input.lower()
-        return any(
-            token in lowered for token in ("card", "cvv", "expiry", "expires", "exp ")
-        )
-
-    @staticmethod
-    def _looks_like_amount_input(user_input: str) -> bool:
-        lowered = user_input.lower()
-        return any(
-            token in lowered
-            for token in ("pay", "rupee", "₹", "rs", "amount", "full balance", "clear it", "pay it all")
-        )
-
-    def _ask_identity(self) -> str:
-        has_name = self._conv.provided_name is not None
-        has_secondary = (
-            self._conv.provided_dob is not None
-            or self._conv.provided_aadhaar4 is not None
-            or self._conv.provided_pincode is not None
-        )
-
-        if not has_name and not has_secondary:
-            return R.ASK_NAME_AND_SECONDARY
-        if not has_name:
-            return R.ASK_NAME
-        if not has_secondary:
-            return R.ASK_SECONDARY
-        # Should not reach here
-        return R.ASK_SECONDARY
-
-    # ── Amount handler ──────────────────────────────────────────────────────
-
-    def _handle_amount(self, user_input: str) -> str:
-        account = self._conv.account
-        assert account is not None
-        balance = account.balance
-
-        # Silent/empty turn — re-prompt without burning an LLM call.
-        if not user_input:
-            return R.ask_amount(balance)
-
-        # Compound capture: user may say "pay 500 with my card 4532..." —
-        # grab the card details now so we don't re-ask after the amount step.
-        self._opportunistic_payment_details(user_input)
-
-        extraction = extract_amount(user_input, balance)
-
-        if extraction.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
-
-        if extraction.wants_full_balance:
-            amount = balance
-        elif extraction.amount is not None:
-            amount = extraction.amount
-        else:
-            return R.INVALID_AMOUNT
-
-        # Client-side validation before API call
-        error = validate_amount(amount, balance)
-        if error == "invalid_amount":
-            return R.INVALID_AMOUNT
-        if error == "insufficient_balance":
-            return R.amount_exceeds_balance(balance)
-
-        self._conv.payment_amount = amount
-        self._conv.transition(State.AWAITING_CARD, trigger="amount_set")
-        return self._card_prompt_after_amount()
-
-    def _card_prompt_after_amount(self, precollected_amount: bool = False) -> str:
-        prefix = (
-            f"I have the payment amount as ₹{self._conv.payment_amount:,.2f}. "
-            if precollected_amount and self._conv.payment_amount is not None
-            else ""
-        )
-        card = self._conv.card
-        if card is None:
-            return prefix + R.ASK_ALL_CARD
-        missing = []
-        if not card.card_number:
-            missing.append("card_number")
-        if not card.cvv:
-            missing.append("cvv")
-        if not card.expiry_month or not card.expiry_year:
-            missing.append("expiry")
-        if not card.cardholder_name:
-            missing.append("cardholder_name")
-        if missing:
-            return prefix + R.ask_card(missing)
-        return (
-            prefix
-            + "I also have the card details you already provided. "
-            "Please confirm I should use those details, or re-enter them if anything has changed."
-        )
-
-    # ── Card handler ────────────────────────────────────────────────────────
-
-    def _handle_card(self, user_input: str) -> str:
-        account = self._conv.account
-        assert account is not None
-
-        # Silent/empty turn — re-prompt for whatever's missing without
-        # burning an LLM call.
-        if not user_input:
-            return self._card_prompt_after_amount()
-
-        # Build "already collected" context from current card state. Skip
-        # fields that were cleared by a prior validation error (stored as
-        # empty/zero) so the prompt doesn't claim we have them.
-        already: dict = {}
-        c = self._conv.card
-        if c:
-            if c.card_number:
-                already["card_number"] = f"****{c.card_number[-4:]}"
-            if c.cvv:
-                already["cvv"] = "***"
-            if c.expiry_month and c.expiry_year:
-                already["expiry"] = f"{c.expiry_month:02d}/{c.expiry_year}"
-            if c.cardholder_name:
-                already["cardholder_name"] = c.cardholder_name
-
-        extraction = extract_card(user_input, already)
-
-        if extraction.user_intent == "wants_to_cancel":
-            self._conv.transition(State.USER_ABORTED, trigger="user_cancel")
-            return R.ABORTED
-
-        # Merge into existing card state. Treat empty string / zero in the
-        # stored partial as "missing" — those values mean a validation error
-        # cleared the field on a prior turn.
-        def _carry(stored):
-            return stored if stored else None
-
-        current = self._conv.card
-        card_number = extraction.card_number or _carry(current.card_number if current else None)
-        cvv = extraction.cvv or _carry(current.cvv if current else None)
-        expiry_month = extraction.expiry_month or _carry(current.expiry_month if current else None)
-        expiry_year = extraction.expiry_year or _carry(current.expiry_year if current else None)
-        cardholder_name = extraction.cardholder_name or _carry(current.cardholder_name if current else None)
-
-        # Identify missing fields for re-prompting
-        missing = []
-        if card_number is None:
-            missing.append("card_number")
-        if cvv is None:
-            missing.append("cvv")
-        if expiry_month is None or expiry_year is None:
-            missing.append("expiry")
-        if cardholder_name is None:
-            missing.append("cardholder_name")
-
-        if missing:
-            # Save partial progress
-            if card_number or cvv or expiry_month or expiry_year or cardholder_name:
-                self._conv.card = CardDetails(
-                    card_number=card_number or "",
-                    cvv=cvv or "",
-                    expiry_month=expiry_month or 0,
-                    expiry_year=expiry_year or 0,
-                    cardholder_name=cardholder_name or "",
-                )
-            return R.ask_card(missing)
-
-        # All fields present — client-side validation
-        assert card_number and cvv and expiry_month and expiry_year and cardholder_name
-
-        if not luhn_check(card_number):
-            return self._handle_card_validation_error(
-                "invalid_card", card_number, cvv, expiry_month, expiry_year, cardholder_name
-            )
-
-        if not validate_cvv(cvv, card_number):
-            return self._handle_card_validation_error(
-                "invalid_cvv", card_number, cvv, expiry_month, expiry_year, cardholder_name
-            )
-
-        if not validate_expiry(expiry_month, expiry_year):
-            return self._handle_card_validation_error(
-                "invalid_expiry", card_number, cvv, expiry_month, expiry_year, cardholder_name
-            )
-
-        # All valid — store and process
-        self._conv.card = CardDetails(
-            card_number=card_number,
-            cvv=cvv,
-            expiry_month=expiry_month,
-            expiry_year=expiry_year,
-            cardholder_name=cardholder_name,
-        )
-        return self._do_payment()
-
-    def _handle_card_validation_error(
-        self,
-        error_code: str,
-        card_number: str,
-        cvv: str,
-        expiry_month: int,
-        expiry_year: int,
-        cardholder_name: str,
-    ) -> str:
-        """Centralized client-side card error handling: increment the payment
-        retry counter, persist the non-offending fields so the user only has to
-        re-enter what failed, and return the appropriate message. Terminates
-        the conversation when retries are exhausted."""
-        self._conv.payment_retries += 1
-        if self._conv.payment_retries >= MAX_PAYMENT_RETRIES:
-            self._conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger="max_payment_retries")
-            return R.PAYMENT_FAILED_TERMINAL
-
-        # Save partial card with only the offending field(s) cleared so the
-        # merge in _handle_card on the next turn picks up the user's correction.
-        self._conv.card = CardDetails(
-            card_number="" if error_code == "invalid_card" else card_number,
-            cvv="" if error_code == "invalid_cvv" else cvv,
-            expiry_month=0 if error_code == "invalid_expiry" else expiry_month,
-            expiry_year=0 if error_code == "invalid_expiry" else expiry_year,
-            cardholder_name=cardholder_name,
-        )
-
-        messages = {
-            "invalid_card": R.CARD_LUHN_FAILED,
-            "invalid_cvv": R.CARD_CVV_INVALID,
-            "invalid_expiry": R.CARD_EXPIRED,
-        }
-        return messages[error_code]
-
-    def _do_payment(self) -> str:
-        conv = self._conv
-        assert conv.account is not None
-        assert conv.card is not None
-        assert conv.payment_amount is not None
-
-        self._conv.transition(State.PROCESSING_PAYMENT, trigger="card_valid")
-        try:
-            result = process_payment(conv.account.account_id, conv.payment_amount, conv.card)
-        except Exception as exc:
-            # Defense in depth: process_payment already converts httpx errors
-            # to server_error, but a library/JSON bug shouldn't crash the loop
-            # or strand us in PROCESSING_PAYMENT. Treat as a retryable
-            # server_error so the existing retry path runs.
-            logger.exception("process_payment unexpected error: %s", exc)
-            result = PaymentResult(success=False, error_code="server_error")
-
-        # Drop card from memory immediately after API call
-        conv.clear_card()
-
-        if result.success:
-            txn_id = result.transaction_id or "N/A"
-            conv.transaction_id = txn_id
-            conv.transition(State.CONFIRM_AND_CLOSE, trigger="payment_success")
-            return R.payment_success(txn_id, conv.payment_amount)
-
-        error_code = result.error_code or "server_error"
-
-        if error_code in RETRYABLE_PAYMENT_ERRORS:
-            conv.payment_retries += 1
-            if conv.payment_retries >= MAX_PAYMENT_RETRIES:
-                conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger="max_payment_retries")
-                return R.PAYMENT_FAILED_TERMINAL
-            conv.transition(State.AWAITING_CARD, trigger="payment_retryable_error")
-            return R.payment_error_message(error_code)
-
-        # Terminal payment errors (e.g. insufficient_balance post-API)
-        conv.transition(State.TERMINAL_PAYMENT_FAILED, trigger=f"payment_terminal_{error_code}")
-        return R.payment_error_message(error_code)
