@@ -539,7 +539,11 @@ class _CollectionHandlers:
 
         self._conv.payment_amount = amount
         self._conv.transition(State.AWAITING_CARD, trigger="amount_set")
-        return self._card_prompt_after_amount()
+        # Acknowledge what the user just said before pivoting to card
+        # collection — otherwise the response reads as a non-sequitur
+        # ("Please provide your card details…") with no indication we
+        # heard them.
+        return R.acknowledge_amount(amount) + self._card_prompt_after_amount()
 
     def _card_prompt_after_amount(self, precollected_amount: bool = False) -> str:
         prefix = (

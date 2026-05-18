@@ -143,6 +143,12 @@ def ask_amount(balance: Decimal) -> str:
         "How much would you like to pay today? You can pay the full amount or a partial amount."
     )
 
+def acknowledge_amount(amount: Decimal) -> str:
+    """Brief, humane acknowledgment of the amount the user just stated.
+    Used as a prefix to the card-collection prompt so the flow doesn't
+    feel like the agent ignored what the user said."""
+    return f"Got it — ₹{amount:,.2f} today. "
+
 # ── Card collection ─────────────────────────────────────────────────────────
 
 def ask_card(missing_fields: list[str]) -> str:
