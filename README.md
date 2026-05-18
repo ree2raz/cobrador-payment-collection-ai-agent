@@ -150,9 +150,10 @@ PHOENIX=1 uv run python -m eval.run_eval --tier 3
 | State machine transition allow-list | 13 | ✅ 100% |
 | PII filter — DOB/Aadhaar/pincode variants | 17 | ✅ 100% |
 | API payload/retry/idempotency-key behavior | 4 | ✅ 100% |
-| Identity-regex deterministic pre-extractor | 21 | ✅ 100% |
-| Event-log masking + event-constant uniqueness | 22 | ✅ 100% |
-| Scripted multi-turn scenarios (all 4 accounts + failure paths + no-progress + retry-budget splits + transient-error termination) | 34 | ✅ 100% |
+| Identity-regex deterministic pre-extractor | 24 | ✅ 100% |
+| Event-log masking + event-constant uniqueness | 19 | ✅ 100% |
+| Persona fault-injection wiring | 3 | ✅ 100% |
+| Scripted multi-turn scenarios (all 4 accounts + failure paths + no-progress + retry-budget splits + transient-error termination + API outage) | 35 | ✅ 100% |
 | **Total** | **183** | **✅ 183/183** |
 
 ### Tier 1.5 — Messy Extraction Accuracy
