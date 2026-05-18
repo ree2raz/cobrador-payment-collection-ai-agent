@@ -66,8 +66,10 @@ MESSY_CASES: list[MessyCase] = [
     # ── Aadhaar ──────────────────────────────────────────────────────────────────
     MessyCase("aadhaar", "full 12-digit",
               "my full Aadhaar is 123456789876", "aadhaar_last4", "9876"),
-    MessyCase("aadhaar", "verbal digits",
-              "aadhaar last four is nine eight seven six", "aadhaar_last4", "9876"),
+    MessyCase("aadhaar", "ends-with question form",
+              # Brief page 2: "Aadhaar ends with 9876, shall I give pincode instead?"
+              "Aadhaar ends with 9876, shall I give pincode instead?",
+              "aadhaar_last4", "9876"),
 
     # ── Amount ───────────────────────────────────────────────────────────────────
     MessyCase("amount", "words rupees",
