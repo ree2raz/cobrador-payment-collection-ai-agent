@@ -12,8 +12,8 @@ eval/results/
 logs/
 *.jsonl
 
-# Personal drafts and rendered artifacts (kept locally, not pushed)
-*_RJ.*
-design_rj.*
+# Local exploration / interview-prep notes (kept locally, not pushed)
+.code-explain/
+
 DESIGN.pdf
 EVALUATION.pdf

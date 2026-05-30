@@ -4,7 +4,7 @@ Eval runner — three tiers + messy extraction accuracy:
   Tier 1: Unit tests (run via pytest)
   Tier 2: Scripted scenarios (run via pytest)
   Tier 3: Persona simulation with LLM-as-judge
-  --messy: Extraction accuracy on 21 production-style messy inputs
+  --messy: Extraction accuracy on 31 production-style messy inputs
 
 Usage:
   uv run python -m eval.run_eval --tier 3
@@ -285,7 +285,7 @@ def main() -> None:
     parser.add_argument(
         "--messy",
         action="store_true",
-        help="Run messy extraction accuracy tests (21 production-style inputs).",
+        help="Run messy extraction accuracy tests (31 production-style inputs).",
     )
     parser.add_argument(
         "--repeat",

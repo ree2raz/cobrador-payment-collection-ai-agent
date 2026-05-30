@@ -145,7 +145,7 @@ These are real, observed failure modes — not hypotheticals. Each is either pin
 
 ### Reasoning-model conservatism on dense compound messages
 
-GPT-5.4 occasionally picks one "primary intent" for a message like `"hi i am rahul mehta, account is acc 1004, I want to pay 3500. my dob is 29 feb 1988"` and drops 1-2 fields. Mitigation: deterministic regex pre-extractor (`core/identity_regex.py`) catches labeled patterns; LLM fills the gaps. Pinned by: `turn1_volunteer` persona + 40 regex tests.
+GPT-5.4 occasionally picks one "primary intent" for a message like `"hi i am rahul mehta, account is acc 1004, I want to pay 3500. my dob is 29 feb 1988"` and drops 1-2 fields. Mitigation: deterministic regex pre-extractor (`core/identity_regex.py`) catches labeled patterns; LLM fills the gaps. Pinned by: `turn1_volunteer` persona + 24 regex tests.
 
 ### LLM title-casing dropouts
 
